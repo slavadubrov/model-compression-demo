@@ -1,6 +1,7 @@
-"""L4-style GPTQ W4A16 quantization with llm-compressor.
+"""GPTQ W4A16 quantization with llm-compressor.
 
-Run this in a CUDA-capable environment after `uv sync --extra gpu`.
+Run this in a CUDA-capable environment after installing the compression stack
+listed in the README.
 """
 
 from __future__ import annotations

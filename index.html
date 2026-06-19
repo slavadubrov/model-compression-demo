@@ -260,7 +260,7 @@
   <header>
     <div class="hero">
       <h1>Model Compression Selection Guide</h1>
-      <p>Choose a quantization algorithm, package, and GPU memory target for LLM deployment. The guide uses the L4 `llm-compressor` GPTQ workflow as the base path, then compares the alternatives teams actually use in production and experiments.</p>
+      <p>Choose a quantization algorithm, package, and GPU memory target for LLM deployment. The guide supports a blog article on compression and quantization approaches, with `llm-compressor` GPTQ as the production-oriented base path and practical alternatives for production, experiments, and edge deployment.</p>
     </div>
   </header>
 
@@ -273,7 +273,7 @@
       </div>
       <div class="decision">
         <div><span class="badge">Fit memory</span></div>
-        <p>Use GPTQ W4A16 with `llm-compressor` when the model does not fit comfortably in VRAM. This is the L4 notebook path: calibrate on a small representative dataset, quantize Linear layers, keep `lm_head` higher precision, then evaluate size, generation, and perplexity.</p>
+        <p>Use GPTQ W4A16 with `llm-compressor` when the model does not fit comfortably in VRAM. Calibrate on a small representative dataset, quantize Linear layers, keep `lm_head` higher precision, then evaluate size, generation, perplexity, task metrics, and long-context behavior.</p>
       </div>
       <div class="decision">
         <div><span class="badge">Throughput</span></div>
@@ -426,7 +426,7 @@
         <tbody>
           <tr>
             <td>`llm-compressor`</td>
-            <td>You want a production checkpoint for vLLM, compressed-tensors metadata, GPTQ/AWQ/FP8, and direct continuity from the L4 notebook.</td>
+            <td>You want a production checkpoint for vLLM, compressed-tensors metadata, GPTQ/AWQ/FP8, and an auditable offline compression workflow.</td>
             <td>You only need quick local runtime quantization or Apple/CPU edge deployment.</td>
           </tr>
           <tr>
@@ -489,7 +489,7 @@
         <div><strong>4. Serve</strong><p>Load in vLLM or the target runtime with the real context and concurrency profile.</p></div>
         <div><strong>5. Decide</strong><p>Keep the smallest format that preserves quality and meets latency, throughput, and cost goals.</p></div>
       </div>
-      <h3>L4-compatible GPTQ command</h3>
+      <h3>GPTQ compression command</h3>
       <pre><code>uv run python demo.py quantize \
   --algorithm gptq-w4a16 \
   --model Qwen/Qwen3-0.6B \

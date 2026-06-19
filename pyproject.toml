@@ -7,38 +7,8 @@ name = "model-compression-demo"
 version = "0.1.0"
 description = "Demo and guide for industry LLM model compression workflows."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 dependencies = []
-
-[project.optional-dependencies]
-gpu = [
-    "accelerate",
-    "compressed-tensors",
-    "datasets",
-    "llmcompressor",
-    "lm_eval",
-    "torch",
-    "transformers>=4.52.1",
-    "vllm",
-]
-alternatives = [
-    "bitsandbytes",
-    "gptqmodel",
-    "peft",
-]
-all = [
-    "accelerate",
-    "bitsandbytes",
-    "compressed-tensors",
-    "datasets",
-    "gptqmodel",
-    "llmcompressor",
-    "lm_eval",
-    "peft",
-    "torch",
-    "transformers>=4.52.1",
-    "vllm",
-]
 
 [project.scripts]
 compression-demo = "compression_demo.cli:main"
@@ -46,6 +16,7 @@ model-compression-demo = "compression_demo.cli:main"
 
 [dependency-groups]
 dev = [
+    "pytest>=8.0.0",
     "ruff>=0.12.0",
 ]
 
@@ -54,7 +25,7 @@ packages = ["compression_demo"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py314"
 
 [tool.ruff.format]
 quote-style = "double"
@@ -63,3 +34,25 @@ line-ending = "auto"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.model-compression-demo.runtime-stacks]
+compression = [
+    "accelerate",
+    "compressed-tensors",
+    "datasets",
+    "llmcompressor",
+    "lm_eval",
+    "torch",
+    "transformers>=4.52.1",
+]
+alternatives = [
+    "bitsandbytes",
+    "gptqmodel",
+    "peft",
+]
+serving = [
+    "vllm",
+]

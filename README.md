@@ -1,9 +1,9 @@
 # Model Compression Demo and Selection Guide
 
-This directory expands the L4 notebook into a reusable model-compression demo.
-It keeps the original `llm-compressor` GPTQ W4A16 path, adds current industry
-alternatives, and includes a planner for choosing an algorithm, package, and GPU
-memory target.
+This directory is a standalone support project for a blog article about model
+compression and quantization approaches. It includes a production-oriented
+`llm-compressor` GPTQ W4A16 path, current industry alternatives, and a planner
+for choosing an algorithm, package, and GPU memory target.
 
 The runnable planner and tests use only the Python standard library. The actual
 quantization paths are optional because this machine does not currently have
@@ -21,8 +21,8 @@ installed.
   GPTQModel, vLLM serving, and perplexity comparison.
 - `index.html`: standalone guide for choosing algorithms, packages, and
   GPU-memory targets.
-- `tests/`: stdlib `unittest` coverage for planner math, CLI behavior, and the
-  HTML guide structure.
+- `tests/`: pytest coverage for planner math, CLI behavior, quality evaluation,
+  project metadata, and the HTML guide structure.
 
 ## Quick start
 
@@ -35,7 +35,7 @@ uv run python demo.py estimate --params-b 7 --scheme w4a16 --context 4096 --conc
 uv run python demo.py plan --params-b 7 --goal fit-memory --hardware ampere --context 4096 --concurrency 4
 uv run python demo.py quantize --dry-run
 uv run python demo.py quality-eval --base-model Qwen/Qwen3-0.6B --compressed-model outputs/Qwen3-0.6B-W4A16 --dry-run
-uv run python -m unittest discover -s tests
+uv run pytest
 ```
 
 From the repository root:
@@ -51,13 +51,82 @@ uv run --project compression/model-compression-demo python demo.py plan \
 
 Open `index.html` in a browser for the guide and calculator.
 
+## Makefile recipes
+
+The project includes a Makefile for the common local workflows:
+
+```bash
+make venv
+make format
+make lint
+make test
+make smoke-html
+make check
+make clean
+make pipeline_dev
+make pipeline_article
+```
+
+Available recipes:
+
+- `make help`: list available recipes.
+- `make venv`: run `uv sync --group dev`.
+- `make format`: apply Ruff formatting.
+- `make format-check`: verify Ruff formatting without editing files.
+- `make lint`: run Ruff lint checks.
+- `make test`: run the pytest suite.
+- `make smoke-html`: validate the HTML guide structure.
+- `make check`: run `format-check`, `lint`, `test`, and `smoke-html`.
+- `make clean`: remove the local `.venv` and generated caches.
+- `make run ARGS="..."`: run arbitrary `demo.py` CLI arguments.
+- `make run_<command> ARGS="..."`: run a named `demo.py` command; underscores
+  become hyphens, so `make run_quality_eval ARGS="--help"` runs
+  `demo.py quality-eval --help`.
+- `make plan`: run the memory and instance planner.
+- `make estimate`: estimate memory for `PARAMS_B` and `SCHEME`.
+- `make recipe`: print the selected compression recipe.
+- `make quantize-dry-run`: show the `llm-compressor` quantization plan.
+- `make quality-eval-dry-run`: show the quality evaluation plan.
+- `make pipeline_dev`: format, lint, test, and smoke-check the project.
+- `make pipeline_article`: run the article-support dry-run pipeline commands.
+- `make pipeline_quality`: run quality-eval dry-run plus HTML smoke check.
+- `make install-compression`: install optional compression/eval packages.
+- `make install-alternatives`: install optional alternatives such as GPTQModel.
+- `make install-serving`: install `vllm`; use only on a supported CUDA/Linux
+  serving stack.
+
+Most recipes accept variables. Examples:
+
+```bash
+make plan PARAMS_B=13 HARDWARE=hopper CONTEXT=8192 CONCURRENCY=8
+make recipe ALGORITHM=fp8-dynamic
+make quality-eval-dry-run \
+  BASE_MODEL=Qwen/Qwen3-0.6B \
+  COMPRESSED_MODEL=outputs/Qwen3-0.6B-W4A16
+make run_plan ARGS="--params-b 7 --goal throughput --hardware hopper"
+```
+
 ## Full llm-compressor quantization path
 
 Use this only in a CUDA-capable environment with enough disk, CPU memory, and GPU
 memory:
 
 ```bash
-uv sync --extra gpu --extra alternatives --group dev
+uv sync --group dev
+uv pip install \
+  accelerate \
+  compressed-tensors \
+  datasets \
+  llmcompressor \
+  lm_eval \
+  torch \
+  "transformers>=4.52.1"
+
+# Optional alternatives covered in the guide.
+uv pip install bitsandbytes gptqmodel peft
+
+# Optional serving runtime. Install this only on a supported CUDA/Linux stack.
+uv pip install vllm
 
 uv run python demo.py quantize \
   --algorithm gptq-w4a16 \
@@ -69,7 +138,7 @@ uv run python demo.py quantize \
   --max-seq-length 4096
 ```
 
-The GPTQ recipe mirrors `notebooks/L4/L4.ipynb`:
+Reference GPTQ recipe:
 
 ```python
 from llmcompressor import oneshot
@@ -141,6 +210,11 @@ uv run ruff format .
 uv run ruff check .
 ```
 
+The heavyweight ML and serving packages are intentionally not declared as
+project extras. `uv` resolves optional dependencies while locking the project, so
+putting CUDA-only packages such as `vllm` in `[project.optional-dependencies]`
+can break a normal `uv sync --group dev` on local development machines.
+
 ## Practical algorithm defaults
 
 Use `llm-compressor` when the output should be a production checkpoint for vLLM
@@ -177,16 +251,14 @@ The output is a first-pass sizing guide. Always validate with a real benchmark o
 the target serving engine, model family, prompt lengths, batch/concurrency shape,
 and quality metric.
 
-## Source inspiration
+## Article support references
 
-This demo is based on:
+This demo supports the compression and quantization article with:
 
-- `notebooks/L4/L4.ipynb`: GPTQ W4A16 recipe, size comparison, generation test,
-  and perplexity comparison.
 - `presentation/grouped_pdfs/04_compression_quantization.pdf`: local slides on
   quantization, memory reduction, W8A16/W8A8, INT8/FP8, INT4/FP4, latency,
   throughput, and benchmark tradeoffs.
 - `build_pdfs.py`: slide grouping comments for the image-based PDF.
+- current upstream package docs and repositories linked from the HTML guide.
 
-The HTML guide links to current upstream docs and repositories for the package
-landscape.
+The HTML guide is the reader-facing package, algorithm, and hardware selector.

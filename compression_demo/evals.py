@@ -20,6 +20,8 @@ DEFAULT_PROMPTS = (
     "Summarize why KV cache memory matters for long-context LLM serving.",
 )
 
+QUALITY_EVAL_INSTALL_COMMAND = "uv pip install torch transformers datasets lm_eval"
+
 
 @dataclass(frozen=True)
 class QualityEvalPlan:
@@ -145,7 +147,7 @@ def format_quality_eval_plan(plan: QualityEvalPlan) -> str:
             [
                 "Missing modules:",
                 *[f"  - {module}" for module in missing],
-                "Install with: uv sync --extra gpu --extra alternatives",
+                f"Install with: {QUALITY_EVAL_INSTALL_COMMAND}",
             ]
         )
     return "\n".join(lines)
@@ -157,7 +159,7 @@ def _require_modules(*modules: str) -> None:
         joined = ", ".join(missing)
         raise RuntimeError(
             f"Missing quality-eval dependencies: {joined}. "
-            "Install them with `uv sync --extra gpu --extra alternatives`."
+            f"Install them with `{QUALITY_EVAL_INSTALL_COMMAND}`."
         )
 
 

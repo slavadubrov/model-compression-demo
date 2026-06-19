@@ -1,7 +1,6 @@
 """Perplexity comparison for base and quantized models.
 
-This follows the L4 notebook pattern. Keep the token limit small for smoke tests
-and raise it for a real evaluation.
+Keep the token limit small for smoke tests and raise it for a real evaluation.
 """
 
 from __future__ import annotations

@@ -6,7 +6,7 @@ vllm serve Qwen/Qwen3-0.6B \
   --dtype bfloat16 \
   --max-model-len 4096
 
-# Serve the L4-style GPTQ W4A16 compressed checkpoint.
+# Serve the GPTQ W4A16 compressed checkpoint.
 vllm serve ./outputs/Qwen3-0.6B-W4A16 \
   --max-model-len 4096
 
