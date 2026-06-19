@@ -1,0 +1,618 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Model Compression Selection Guide</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #1f2933;
+      --muted: #5c6672;
+      --line: #d9dee5;
+      --panel: #ffffff;
+      --soft: #f5f7fa;
+      --accent: #0b6bcb;
+      --accent-2: #16736a;
+      --warn: #8a5a00;
+      --bad: #9b1c1c;
+      --code: #102a43;
+    }
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: #eef2f6;
+      line-height: 1.55;
+    }
+    header {
+      background:
+        linear-gradient(90deg, rgba(15, 49, 82, 0.90), rgba(14, 91, 84, 0.84)),
+        url("../../presentation/Screenshot 2026-06-15 at 15.50.06.png");
+      background-size: cover;
+      background-position: center;
+      color: white;
+      min-height: 420px;
+      display: flex;
+      align-items: end;
+      padding: 56px 24px 44px;
+    }
+    .hero {
+      width: min(1120px, 100%);
+      margin: 0 auto;
+    }
+    h1 {
+      max-width: 780px;
+      margin: 0 0 16px;
+      font-size: clamp(2.3rem, 6vw, 4.4rem);
+      line-height: 1.02;
+      letter-spacing: 0;
+    }
+    .hero p {
+      max-width: 780px;
+      margin: 0;
+      font-size: 1.1rem;
+      color: rgba(255, 255, 255, 0.92);
+    }
+    main {
+      width: min(1120px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 24px 0 64px;
+    }
+    section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 24px;
+      margin: 18px 0;
+      box-shadow: 0 1px 2px rgba(31, 41, 51, 0.06);
+    }
+    h2 {
+      margin: 0 0 12px;
+      font-size: 1.45rem;
+      letter-spacing: 0;
+    }
+    h3 {
+      margin: 20px 0 8px;
+      font-size: 1.05rem;
+      letter-spacing: 0;
+    }
+    p {
+      margin: 0 0 12px;
+      color: var(--muted);
+    }
+    a {
+      color: var(--accent);
+      text-decoration-thickness: 1px;
+    }
+    .grid {
+      display: grid;
+      gap: 16px;
+    }
+    .grid.cols-3 {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+    .grid.cols-2 {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .callout {
+      border-left: 4px solid var(--accent);
+      background: #eef6ff;
+      padding: 12px 14px;
+      border-radius: 6px;
+      color: #243b53;
+    }
+    .callout strong {
+      color: var(--ink);
+    }
+    .decision {
+      display: grid;
+      grid-template-columns: 190px 1fr;
+      gap: 14px;
+      align-items: start;
+      border-top: 1px solid var(--line);
+      padding-top: 14px;
+      margin-top: 14px;
+    }
+    .badge {
+      display: inline-block;
+      font-size: 0.78rem;
+      font-weight: 700;
+      color: white;
+      background: var(--accent-2);
+      border-radius: 999px;
+      padding: 3px 9px;
+      margin-right: 6px;
+      white-space: nowrap;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0 4px;
+      font-size: 0.94rem;
+    }
+    th, td {
+      border: 1px solid var(--line);
+      padding: 10px;
+      vertical-align: top;
+      text-align: left;
+    }
+    th {
+      background: #f0f4f8;
+      color: #263849;
+    }
+    code, pre {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      color: var(--code);
+    }
+    pre {
+      overflow: auto;
+      background: #edf1f5;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 14px;
+      font-size: 0.9rem;
+    }
+    label {
+      display: block;
+      font-weight: 700;
+      font-size: 0.9rem;
+      margin-bottom: 6px;
+    }
+    input, select {
+      width: 100%;
+      border: 1px solid #b7c2ce;
+      border-radius: 6px;
+      padding: 9px 10px;
+      font: inherit;
+      background: white;
+      min-height: 42px;
+    }
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+      margin: 16px 0;
+    }
+    .result {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 16px;
+    }
+    .metric {
+      background: var(--soft);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      min-height: 92px;
+    }
+    .metric span {
+      display: block;
+      color: var(--muted);
+      font-size: 0.82rem;
+      margin-bottom: 6px;
+    }
+    .metric strong {
+      font-size: 1.4rem;
+    }
+    .ok {
+      color: var(--accent-2);
+      font-weight: 700;
+    }
+    .warn {
+      color: var(--warn);
+      font-weight: 700;
+    }
+    .bad {
+      color: var(--bad);
+      font-weight: 700;
+    }
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 14px;
+    }
+    .flow div {
+      min-height: 112px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #f8fafc;
+      padding: 12px;
+    }
+    .flow strong {
+      display: block;
+      margin-bottom: 6px;
+    }
+    .sources li {
+      margin: 7px 0;
+    }
+    @media (max-width: 900px) {
+      .grid.cols-3,
+      .grid.cols-2,
+      .form-grid,
+      .result,
+      .flow {
+        grid-template-columns: 1fr;
+      }
+      .decision {
+        grid-template-columns: 1fr;
+      }
+      header {
+        min-height: 360px;
+      }
+      section {
+        padding: 18px;
+      }
+      table {
+        display: block;
+        overflow-x: auto;
+        white-space: nowrap;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="hero">
+      <h1>Model Compression Selection Guide</h1>
+      <p>Choose a quantization algorithm, package, and GPU memory target for LLM deployment. The guide uses the L4 `llm-compressor` GPTQ workflow as the base path, then compares the alternatives teams actually use in production and experiments.</p>
+    </div>
+  </header>
+
+  <main>
+    <section>
+      <h2>Default Recommendation</h2>
+      <div class="callout">
+        <strong>Start with `llm-compressor` unless your deployment target says otherwise.</strong>
+        It is the vLLM-project compression toolkit, emits compressed-tensors metadata, and covers GPTQ, AWQ, RTN, SmoothQuant, AutoRound, FP8, KV-cache quantization, and newer FP4 paths.
+      </div>
+      <div class="decision">
+        <div><span class="badge">Fit memory</span></div>
+        <p>Use GPTQ W4A16 with `llm-compressor` when the model does not fit comfortably in VRAM. This is the L4 notebook path: calibrate on a small representative dataset, quantize Linear layers, keep `lm_head` higher precision, then evaluate size, generation, and perplexity.</p>
+      </div>
+      <div class="decision">
+        <div><span class="badge">Throughput</span></div>
+        <p>Use dynamic FP8 W8A8 on Ada, Hopper, and newer GPUs when throughput is the goal and your runtime has the right kernels. FP8 usually beats int4 for high-concurrency serving because it avoids some weight-only dequantization overhead.</p>
+      </div>
+      <div class="decision">
+        <div><span class="badge">Experiments</span></div>
+        <p>Use bitsandbytes for fast local experiments and QLoRA-style fine-tuning. It is popular and easy, but it is runtime quantization rather than a clean vLLM production checkpoint export.</p>
+      </div>
+      <div class="decision">
+        <div><span class="badge">Alternative</span></div>
+        <p>Use GPTQModel when you want a current GPTQ/AWQ toolkit outside the `llm-compressor` workflow. Avoid starting new work on AutoAWQ or AutoGPTQ because their upstream repos now point users elsewhere.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2>Interactive Memory and Instance Selector</h2>
+      <p>Use this for first-pass sizing. It estimates model weights, KV cache, runtime overhead, and a safety buffer. Real deployments still need vLLM or TensorRT-LLM load tests with the target prompt distribution.</p>
+      <div class="form-grid">
+        <div>
+          <label for="params">Parameters, billions</label>
+          <input id="params" type="number" min="0.1" step="0.1" value="7">
+        </div>
+        <div>
+          <label for="scheme">Quantization scheme</label>
+          <select id="scheme">
+            <option value="bf16">BF16/FP16 baseline</option>
+            <option value="w8a16">W8A16</option>
+            <option value="w4a16" selected>W4A16 GPTQ/AWQ</option>
+            <option value="w8a8-int8">W8A8 INT8</option>
+            <option value="fp8-dynamic">W8A8 FP8 dynamic</option>
+            <option value="w4afp8">W4A(FP8)</option>
+            <option value="nvfp4-mxfp4">NVFP4/MXFP4</option>
+            <option value="bnb-nf4">bitsandbytes NF4</option>
+            <option value="gguf-q4">GGUF Q4</option>
+          </select>
+        </div>
+        <div>
+          <label for="layers">Decoder layers</label>
+          <input id="layers" type="number" min="1" step="1" value="32">
+        </div>
+        <div>
+          <label for="hidden">Hidden size</label>
+          <input id="hidden" type="number" min="128" step="128" value="4096">
+        </div>
+        <div>
+          <label for="context">Context tokens</label>
+          <input id="context" type="number" min="1" step="128" value="4096">
+        </div>
+        <div>
+          <label for="concurrency">Concurrent sequences</label>
+          <input id="concurrency" type="number" min="1" step="1" value="4">
+        </div>
+        <div>
+          <label for="kvbits">KV cache bits</label>
+          <select id="kvbits">
+            <option value="16" selected>16-bit KV</option>
+            <option value="8">8-bit KV</option>
+            <option value="4">4-bit KV</option>
+          </select>
+        </div>
+        <div>
+          <label for="kvratio">KV head ratio</label>
+          <input id="kvratio" type="number" min="0.1" max="1" step="0.05" value="1">
+        </div>
+      </div>
+      <div class="result">
+        <div class="metric"><span>Weights</span><strong id="weights">0 GiB</strong></div>
+        <div class="metric"><span>KV cache</span><strong id="kv">0 GiB</strong></div>
+        <div class="metric"><span>Total target</span><strong id="total">0 GiB</strong></div>
+        <div class="metric"><span>Smallest matching GPU</span><strong id="gpu">-</strong></div>
+      </div>
+      <p id="compat" class="warn"></p>
+    </section>
+
+    <section>
+      <h2>Algorithm Matrix</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Algorithm</th>
+            <th>Package</th>
+            <th>Best use</th>
+            <th>Tradeoff</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>RTN W8A16</td>
+            <td>`llm-compressor` `QuantizationModifier`</td>
+            <td>Fast baseline, little setup, low risk.</td>
+            <td>Lower compression and usually lower quality recovery than GPTQ or AWQ.</td>
+          </tr>
+          <tr>
+            <td>GPTQ W4A16</td>
+            <td>`llm-compressor` `GPTQModifier`, GPTQModel</td>
+            <td>Production int4 weight-only checkpoints when VRAM is the constraint.</td>
+            <td>Needs calibration data and extra compression-time GPU memory for hessian matrices.</td>
+          </tr>
+          <tr>
+            <td>AWQ W4A16</td>
+            <td>`llm-compressor` `AWQModifier` plus `QuantizationModifier`</td>
+            <td>Int4 weight-only deployment, often strong for instruction-tuned and multimodal models.</td>
+            <td>Model family mappings matter. Validate before rollout.</td>
+          </tr>
+          <tr>
+            <td>SmoothQuant W8A8</td>
+            <td>`llm-compressor`</td>
+            <td>Activation quantization with outlier smoothing on broad GPU support.</td>
+            <td>More moving parts than weight-only quantization.</td>
+          </tr>
+          <tr>
+            <td>Dynamic FP8</td>
+            <td>`llm-compressor`, NVIDIA ModelOpt</td>
+            <td>High-throughput serving on Ada, Hopper, and newer GPUs.</td>
+            <td>Hardware and runtime kernel support decide whether it is available.</td>
+          </tr>
+          <tr>
+            <td>KV cache quantization</td>
+            <td>vLLM, selected compressed checkpoints</td>
+            <td>Long-context and high-concurrency serving where cache memory dominates.</td>
+            <td>Can affect quality. Test retrieval and long-context tasks.</td>
+          </tr>
+          <tr>
+            <td>bitsandbytes LLM.int8 / NF4</td>
+            <td>Transformers + bitsandbytes + PEFT</td>
+            <td>Experiments, local inference, and QLoRA fine-tuning.</td>
+            <td>Less suitable as a vLLM compressed checkpoint publishing path.</td>
+          </tr>
+          <tr>
+            <td>GGUF K-quants</td>
+            <td>llama.cpp, Ollama, MLX-LM</td>
+            <td>CPU, Apple Silicon, desktop, and edge deployments.</td>
+            <td>Different runtime ecosystem from vLLM server GPU deployment.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Package Choice</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Package</th>
+            <th>Choose it when</th>
+            <th>Do not choose it when</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>`llm-compressor`</td>
+            <td>You want a production checkpoint for vLLM, compressed-tensors metadata, GPTQ/AWQ/FP8, and direct continuity from the L4 notebook.</td>
+            <td>You only need quick local runtime quantization or Apple/CPU edge deployment.</td>
+          </tr>
+          <tr>
+            <td>bitsandbytes</td>
+            <td>You want simple `Transformers` runtime loading, LLM.int8, NF4, or QLoRA fine-tuning.</td>
+            <td>You need a portable vLLM artifact with an offline compression audit trail.</td>
+          </tr>
+          <tr>
+            <td>GPTQModel</td>
+            <td>You want a current alternative for GPTQ/AWQ across Transformers, Optimum, PEFT, vLLM, and SGLang.</td>
+            <td>You are already committed to the vLLM project's `llm-compressor` flow.</td>
+          </tr>
+          <tr>
+            <td>llama.cpp / GGUF</td>
+            <td>You deploy on CPU, Apple Silicon, mobile, desktop, or edge runtimes.</td>
+            <td>You need high-concurrency vLLM serving with continuous batching.</td>
+          </tr>
+          <tr>
+            <td>TensorRT-LLM / NVIDIA ModelOpt</td>
+            <td>You are standardizing on NVIDIA's deployment stack and can tune per GPU generation.</td>
+            <td>You need the simpler open vLLM path or non-NVIDIA portability.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Hardware and Memory Rules</h2>
+      <div class="grid cols-3">
+        <div class="callout"><strong>Weights</strong><br>1B fp16/bf16 parameters are roughly 2 GB before overhead. W4A16 only quantizes selected weights, so the real model reduction is less than the theoretical 4x.</div>
+        <div class="callout"><strong>KV cache</strong><br>KV memory scales with layers, hidden dimension, context length, concurrency, and KV precision. Long context can erase the savings from weight quantization.</div>
+        <div class="callout"><strong>Compression job</strong><br>Serving fit and compression fit are different. GPTQ needs auxiliary memory during calibration; `llm-compressor` text decoding flows commonly onload one layer at a time.</div>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>GPU class</th>
+            <th>Memory</th>
+            <th>Use with</th>
+            <th>Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>T4</td><td>16 GB</td><td>INT8, small models, experiments</td><td>Tight for modern long-context serving.</td></tr>
+          <tr><td>L4 / A10G / RTX 4090</td><td>24 GB</td><td>7B W4A16, small FP8 on L4/4090</td><td>A10G is Ampere and does not provide the same FP8 path as Ada/Hopper.</td></tr>
+          <tr><td>L40S</td><td>48 GB</td><td>7B/13B with more context headroom</td><td>Ada-class FP8-capable server GPU.</td></tr>
+          <tr><td>A100</td><td>40/80 GB</td><td>W4A16, W8A16, tensor-parallel serving</td><td>Strong Ampere default, but no native Hopper FP8 tensor-core path.</td></tr>
+          <tr><td>H100 / H200</td><td>80/141 GB</td><td>FP8 throughput, long context</td><td>Best mainstream target for W8A8 FP8 serving.</td></tr>
+          <tr><td>B200</td><td>180 GB</td><td>FP4/NVFP4/MXFP4 exploration</td><td>Use only when the exact software stack supports the format.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Recommended Workflow</h2>
+      <div class="flow">
+        <div><strong>1. Baseline</strong><p>Run bf16/fp16 generation and task evals. Save latency, throughput, memory, and quality numbers.</p></div>
+        <div><strong>2. Compress</strong><p>Start with GPTQ W4A16 for fit or FP8 dynamic for throughput on modern GPUs.</p></div>
+        <div><strong>3. Validate</strong><p>Compare generation samples, perplexity, task metrics, and long-context behavior.</p></div>
+        <div><strong>4. Serve</strong><p>Load in vLLM or the target runtime with the real context and concurrency profile.</p></div>
+        <div><strong>5. Decide</strong><p>Keep the smallest format that preserves quality and meets latency, throughput, and cost goals.</p></div>
+      </div>
+      <h3>L4-compatible GPTQ command</h3>
+      <pre><code>uv run python demo.py quantize \
+  --algorithm gptq-w4a16 \
+  --model Qwen/Qwen3-0.6B \
+  --output-dir outputs/Qwen3-0.6B-W4A16 \
+  --dataset wikitext \
+  --dataset-config-name wikitext-2-raw-v1 \
+  --num-calibration-samples 256 \
+  --max-seq-length 4096</code></pre>
+      <h3>Planner command</h3>
+      <pre><code>uv run python demo.py plan --params-b 7 --goal fit-memory --hardware ampere --context 4096 --concurrency 4</code></pre>
+      <h3>Quality evaluation command</h3>
+      <pre><code>uv run python demo.py quality-eval \
+  --base-model Qwen/Qwen3-0.6B \
+  --compressed-model outputs/Qwen3-0.6B-W4A16 \
+  --mode all \
+  --lm-eval-task hellaswag \
+  --output-json reports/qwen3-0.6b-w4a16-quality.json</code></pre>
+      <table>
+        <thead>
+          <tr>
+            <th>Quality check</th>
+            <th>What it catches</th>
+            <th>Implemented by</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>Generation comparison</td><td>Obvious instruction-following or fluency regressions.</td><td>`quality-eval --mode generation`</td></tr>
+          <tr><td>Perplexity comparison</td><td>Language-modeling loss increase after compression.</td><td>`quality-eval --mode perplexity`</td></tr>
+          <tr><td>Task metrics</td><td>Benchmark accuracy deltas such as HellaSwag.</td><td>`quality-eval --mode lm-eval --lm-eval-task hellaswag`</td></tr>
+          <tr><td>Long-context probe</td><td>Context/KV-cache regressions that short prompts miss.</td><td>`quality-eval --mode long-context`</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Sources</h2>
+      <ul class="sources">
+        <li><a href="https://docs.vllm.ai/projects/llm-compressor/en/latest/">LLM Compressor documentation</a></li>
+        <li><a href="https://docs.vllm.ai/projects/llm-compressor/en/latest/guides/memory/">LLM Compressor memory requirements</a></li>
+        <li><a href="https://docs.vllm.ai/projects/llm-compressor/en/latest/examples/awq/">LLM Compressor AWQ example</a></li>
+        <li><a href="https://docs.vllm.ai/projects/llm-compressor/en/latest/examples/quantization_w8a8_fp8/">LLM Compressor FP8 example</a></li>
+        <li><a href="https://docs.vllm.ai/en/latest/features/quantization/">vLLM quantization documentation</a></li>
+        <li><a href="https://huggingface.co/docs/transformers/en/quantization/overview">Transformers quantization overview</a></li>
+        <li><a href="https://huggingface.co/docs/transformers/en/quantization/bitsandbytes">Transformers bitsandbytes documentation</a></li>
+        <li><a href="https://github.com/casper-hansen/AutoAWQ">AutoAWQ repository notice</a></li>
+        <li><a href="https://github.com/AutoGPTQ/AutoGPTQ">AutoGPTQ repository notice</a></li>
+        <li><a href="https://github.com/ModelCloud/GPTQModel">GPTQModel repository</a></li>
+      </ul>
+    </section>
+  </main>
+
+  <script>
+    const schemes = {
+      "bf16": { bits: 16, fraction: 0.0, cc: 7.0, label: "BF16/FP16 baseline" },
+      "w8a16": { bits: 8, fraction: 0.90, cc: 8.0, label: "W8A16" },
+      "w4a16": { bits: 4, fraction: 0.88, cc: 8.0, label: "W4A16" },
+      "w8a8-int8": { bits: 8, fraction: 0.92, cc: 7.5, label: "W8A8 INT8" },
+      "fp8-dynamic": { bits: 8, fraction: 0.95, cc: 8.9, label: "W8A8 FP8 dynamic" },
+      "w4afp8": { bits: 4, fraction: 0.92, cc: 8.9, label: "W4A(FP8)" },
+      "nvfp4-mxfp4": { bits: 4, fraction: 0.95, cc: 10.0, label: "NVFP4/MXFP4" },
+      "bnb-nf4": { bits: 4, fraction: 0.90, cc: 6.0, label: "bitsandbytes NF4" },
+      "gguf-q4": { bits: 4.5, fraction: 0.95, cc: 0.0, label: "GGUF Q4" }
+    };
+    const gpus = [
+      { name: "T4 16GB", mem: 16, cc: 7.5 },
+      { name: "L4 24GB", mem: 24, cc: 8.9 },
+      { name: "A10G 24GB", mem: 24, cc: 8.6 },
+      { name: "RTX 4090 24GB", mem: 24, cc: 8.9 },
+      { name: "L40S 48GB", mem: 48, cc: 8.9 },
+      { name: "A100 40GB", mem: 40, cc: 8.0 },
+      { name: "A100 80GB", mem: 80, cc: 8.0 },
+      { name: "H100 80GB", mem: 80, cc: 9.0 },
+      { name: "H200 141GB", mem: 141, cc: 9.0 },
+      { name: "B200 180GB", mem: 180, cc: 10.0 }
+    ];
+    const ids = ["params", "scheme", "layers", "hidden", "context", "concurrency", "kvbits", "kvratio"];
+    for (const id of ids) {
+      document.getElementById(id).addEventListener("input", calculate);
+      document.getElementById(id).addEventListener("change", calculate);
+    }
+    function gib(value) {
+      return `${value.toFixed(2)} GiB`;
+    }
+    function calculate() {
+      const params = Number(document.getElementById("params").value);
+      const scheme = schemes[document.getElementById("scheme").value];
+      const layers = Number(document.getElementById("layers").value);
+      const hidden = Number(document.getElementById("hidden").value);
+      const context = Number(document.getElementById("context").value);
+      const concurrency = Number(document.getElementById("concurrency").value);
+      const kvbits = Number(document.getElementById("kvbits").value);
+      const kvratio = Number(document.getElementById("kvratio").value);
+      const effectiveBits = scheme.bits * scheme.fraction + 16 * (1 - scheme.fraction);
+      const weights = params * 1_000_000_000 * (effectiveBits / 8) / (1024 ** 3);
+      const kv = 2 * layers * hidden * kvratio * context * concurrency * (kvbits / 8) / (1024 ** 3);
+      const overhead = Math.max(2, weights * 0.15);
+      const subtotal = weights + kv + overhead;
+      const total = subtotal + Math.max(1, subtotal * 0.10);
+      const candidates = gpus
+        .filter(gpu => gpu.cc >= scheme.cc && gpu.mem >= total)
+        .sort((a, b) => a.mem - b.mem || a.cc - b.cc);
+      document.getElementById("weights").textContent = gib(weights);
+      document.getElementById("kv").textContent = gib(kv);
+      document.getElementById("total").textContent = gib(total);
+      const gpuEl = document.getElementById("gpu");
+      const compatEl = document.getElementById("compat");
+      if (candidates.length > 0) {
+        const best = candidates[0];
+        gpuEl.textContent = best.name;
+        gpuEl.className = "ok";
+        compatEl.textContent = `${scheme.label} needs compute capability ${scheme.cc.toFixed(1)} or newer. ${best.name} leaves ${(best.mem - total).toFixed(1)} GiB headroom in this estimate.`;
+        compatEl.className = "ok";
+      } else {
+        const capable = gpus.filter(gpu => gpu.cc >= scheme.cc).sort((a, b) => b.mem - a.mem)[0];
+        gpuEl.textContent = capable ? `Shard beyond ${capable.name}` : "No listed GPU";
+        gpuEl.className = "bad";
+        compatEl.textContent = capable
+          ? `No single listed GPU fits ${gib(total)}. Serving may require tensor parallelism or lower context/concurrency. Offline compression does not shard the same way.`
+          : `No listed GPU satisfies compute capability ${scheme.cc.toFixed(1)}.`;
+        compatEl.className = "bad";
+      }
+    }
+    calculate();
+  </script>
+</body>
+</html>
