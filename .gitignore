@@ -6,4 +6,5 @@
 __pycache__/
 *.py[cod]
 outputs/
+reports/
 *.egg-info/

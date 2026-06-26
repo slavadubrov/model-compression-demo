@@ -13,6 +13,9 @@ BASE_MODEL ?= Qwen/Qwen3-0.6B
 COMPRESSED_MODEL ?= outputs/Qwen3-0.6B-W4A16
 LM_EVAL_TASK ?= hellaswag
 QUALITY_JSON ?= reports/qwen3-0.6b-w4a16-quality.json
+BENCHMARK_MODEL ?= Qwen/Qwen2.5-32B-Instruct
+BENCHMARK_ALGORITHMS ?= gptq-w4a16,awq-w4a16,bnb-nf4,gguf-q4
+BENCHMARK_JSON ?= reports/quantization-benchmark-plan.json
 ARGS ?=
 
 .PHONY: help
@@ -34,6 +37,7 @@ help:
 		'  make recipe                Print the selected compression recipe.' \
 		'  make quantize-dry-run      Show the llm-compressor quantization plan.' \
 		'  make quality-eval-dry-run  Show the quality evaluation plan.' \
+		'  make benchmark-plan        Generate vLLM benchmark commands.' \
 		'  make pipeline_dev          Format, lint, test, and smoke-check the project.' \
 		'  make pipeline_article      Run article-support dry-run pipeline commands.' \
 		'  make install-compression   Install optional compression/eval packages.' \
@@ -119,11 +123,15 @@ quality-eval-dry-run: venv
 quality-eval: venv
 	$(UV) run $(PYTHON) $(DEMO) quality-eval --base-model $(BASE_MODEL) --compressed-model $(COMPRESSED_MODEL) --mode all --lm-eval-task $(LM_EVAL_TASK) --output-json $(QUALITY_JSON)
 
+.PHONY: benchmark-plan
+benchmark-plan: venv
+	$(UV) run $(PYTHON) $(DEMO) benchmark-plan --model $(BENCHMARK_MODEL) --algorithms $(BENCHMARK_ALGORITHMS) --output-json $(BENCHMARK_JSON)
+
 .PHONY: pipeline_dev
 pipeline_dev: format lint test smoke-html
 
 .PHONY: pipeline_article
-pipeline_article: plan quantize-dry-run quality-eval-dry-run smoke-html
+pipeline_article: plan quantize-dry-run quality-eval-dry-run benchmark-plan smoke-html
 
 .PHONY: pipeline_quality
 pipeline_quality: quality-eval-dry-run smoke-html

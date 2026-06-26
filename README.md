@@ -15,7 +15,7 @@ installed.
 
 - `demo.py`: CLI for algorithm listing, recipe generation, memory estimation,
   instance recommendations, size comparison, dry-run quantization, environment
-  checks, quality evaluation, and HTML smoke checks.
+  checks, benchmark command planning, quality evaluation, and HTML smoke checks.
 - `compression_demo/`: importable planner, algorithm catalog, quality evals,
   and recipe helpers.
 - `examples/`: focused code examples for `llm-compressor`, bitsandbytes,
@@ -39,6 +39,7 @@ uv run python demo.py plan --model-preset llama3-8b --goal fit-memory --hardware
 uv run python demo.py quantize --dry-run
 uv run python demo.py quantize --calibration-file examples/representative_calibration.jsonl --dry-run
 uv run python demo.py serve-command --algorithm fp8-dynamic --fp8-kv-cache --enable-prefix-caching
+uv run python demo.py benchmark-plan --algorithms gptq-w4a16,awq-w4a16,bnb-nf4,gguf-q4
 uv run python demo.py quality-eval --base-model Qwen/Qwen3-0.6B --compressed-model outputs/Qwen3-0.6B-W4A16 --dry-run
 uv run pytest
 ```
@@ -92,6 +93,7 @@ Available recipes:
 - `make recipe`: print the selected compression recipe.
 - `make quantize-dry-run`: show the `llm-compressor` quantization plan.
 - `make quality-eval-dry-run`: show the quality evaluation plan.
+- `make benchmark-plan`: generate vLLM benchmark commands and write JSON.
 - `make pipeline_dev`: format, lint, test, and smoke-check the project.
 - `make pipeline_article`: run the article-support dry-run pipeline commands.
 - `make pipeline_quality`: run quality-eval dry-run plus HTML smoke check.
@@ -108,6 +110,9 @@ make recipe ALGORITHM=fp8-dynamic
 make quality-eval-dry-run \
   BASE_MODEL=Qwen/Qwen3-0.6B \
   COMPRESSED_MODEL=outputs/Qwen3-0.6B-W4A16
+make benchmark-plan \
+  BENCHMARK_MODEL=Qwen/Qwen2.5-32B-Instruct \
+  BENCHMARK_ALGORITHMS=gptq-w4a16,awq-w4a16,bnb-nf4,gguf-q4
 make run_plan ARGS="--params-b 7 --goal throughput --hardware hopper"
 ```
 
@@ -236,6 +241,35 @@ loads base and compressed models sequentially to reduce VRAM pressure, writes
 partial JSON after each completed phase when `--output-json` is set, and exits
 non-zero if a deployment gate fails. The JSON report contains a compact
 `summary.verdict` of `pass`, `fail`, or `needs_review`.
+
+## Benchmark planning workflow
+
+The benchmark planner generates commands for a real vLLM benchmark run. It does
+not claim benchmark numbers on your behalf. Run the generated commands on the
+same hardware, driver, CUDA, vLLM, model, prompt mix, and concurrency settings
+that you plan to deploy.
+
+```bash
+uv run python demo.py benchmark-plan \
+  --model Qwen/Qwen2.5-32B-Instruct \
+  --algorithms gptq-w4a16,awq-w4a16,bnb-nf4,gguf-q4 \
+  --dataset-name sharegpt \
+  --num-prompts 200 \
+  --input-len 1024 \
+  --output-len 256 \
+  --output-json reports/quantization-benchmark-plan.json
+```
+
+Each row includes:
+
+- `serve_command`: a vLLM serving command for the quantized variant.
+- `bench_command`: a matching `vllm bench serve` command.
+- `quality_eval_command`: the local quality-gate command to run before
+  promoting the checkpoint.
+- hardware and runtime notes for cases such as bitsandbytes, GGUF, AWQ kernels,
+  and FP8 flags.
+
+For a shell-oriented starting point, see `examples/vllm_quantization_benchmark.sh`.
 
 ## Model architecture inputs
 

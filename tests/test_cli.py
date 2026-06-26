@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import pathlib
 from contextlib import redirect_stdout
 
@@ -110,6 +111,56 @@ def test_serve_command_for_fp8_kv_cache() -> None:
     assert "--kv-cache-dtype fp8" in out
     assert "--max-model-len 32768" in out
     assert "--enable-prefix-caching" in out
+
+
+def test_benchmark_plan_outputs_json_shape_and_commands(tmp_path: pathlib.Path) -> None:
+    output_json = tmp_path / "benchmark-plan.json"
+    out = run_cli(
+        "benchmark-plan",
+        "--model",
+        "Qwen/Qwen2.5-32B-Instruct",
+        "--algorithms",
+        "gptq-w4a16,awq-w4a16,bnb-nf4,gguf-q4",
+        "--dataset-name",
+        "sharegpt",
+        "--num-prompts",
+        "200",
+        "--input-len",
+        "1024",
+        "--output-len",
+        "256",
+        "--output-json",
+        str(output_json),
+    )
+    payload = json.loads(out)
+    file_payload = json.loads(output_json.read_text(encoding="utf-8"))
+    assert payload == file_payload
+    assert payload["warning"].startswith("This command plan generates")
+    assert len(payload["rows"]) == 4
+    first = payload["rows"][0]
+    assert first["algorithm_key"] == "gptq-w4a16"
+    assert "vllm serve" in first["serve_command"]
+    assert "vllm bench serve" in first["bench_command"]
+    assert "quality-eval" in first["quality_eval_command"]
+
+
+def test_benchmark_plan_generates_vllm_flags_for_common_variants() -> None:
+    out = run_cli(
+        "benchmark-plan",
+        "--algorithms",
+        "awq-w4a16,bnb-nf4,gguf-q4",
+    )
+    assert "--quantization awq" in out
+    assert "--quantization bitsandbytes --load-format bitsandbytes" in out
+    assert "--tokenizer Qwen/Qwen2.5-32B-Instruct" in out
+    assert "GPU benchmark numbers are environment-specific" in out
+
+
+def test_readme_mentions_benchmark_plan_workflow() -> None:
+    readme = pathlib.Path(__file__).resolve().parents[1] / "README.md"
+    text = readme.read_text(encoding="utf-8")
+    assert "benchmark-plan" in text
+    assert "vllm_quantization_benchmark.sh" in text
 
 
 def test_model_preset_supplies_params_and_architecture() -> None:

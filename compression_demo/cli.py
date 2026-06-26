@@ -9,6 +9,12 @@ import pathlib
 import sys
 from html.parser import HTMLParser
 
+from .benchmarks import (
+    build_benchmark_plan,
+    format_benchmark_plan,
+    parse_algorithm_list,
+    write_benchmark_plan_json,
+)
 from .catalog import ALGORITHMS, ARCH_TO_COMPUTE_CAPABILITY, GPU_INSTANCES, SCHEMES
 from .evals import (
     DEFAULT_LM_EVAL_LIMIT,
@@ -214,6 +220,24 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--fp8-kv-cache", action="store_true")
     serve.add_argument("--enable-prefix-caching", action="store_true")
 
+    benchmark = subparsers.add_parser(
+        "benchmark-plan",
+        help="Generate reproducible vLLM benchmark commands for quantized variants.",
+    )
+    benchmark.add_argument("--model", default="Qwen/Qwen2.5-32B-Instruct")
+    benchmark.add_argument(
+        "--algorithms",
+        default="gptq-w4a16,awq-w4a16,fp8-dynamic",
+        help="Comma-separated algorithm keys from list-algorithms.",
+    )
+    benchmark.add_argument("--dataset-name", default="sharegpt")
+    benchmark.add_argument("--num-prompts", type=int, default=200)
+    benchmark.add_argument("--input-len", type=int, default=1024)
+    benchmark.add_argument("--output-len", type=int, default=256)
+    benchmark.add_argument("--max-model-len", type=int, default=4096)
+    benchmark.add_argument("--port", type=int, default=8000)
+    benchmark.add_argument("--output-json")
+
     compare = subparsers.add_parser(
         "compare-size", help="Compare base and compressed model folder sizes."
     )
@@ -418,6 +442,26 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         print("# Check your installed vLLM version because FP8 flag names can vary.")
+        return 0
+
+    if args.command == "benchmark-plan":
+        try:
+            algorithm_keys = parse_algorithm_list(args.algorithms)
+        except ValueError as exc:
+            parser.error(str(exc))
+        plan = build_benchmark_plan(
+            model=args.model,
+            algorithm_keys=algorithm_keys,
+            dataset_name=args.dataset_name,
+            num_prompts=args.num_prompts,
+            input_len=args.input_len,
+            output_len=args.output_len,
+            max_model_len=args.max_model_len,
+            port=args.port,
+        )
+        if args.output_json:
+            write_benchmark_plan_json(plan, args.output_json)
+        print(plan.to_json() if args.output_json else format_benchmark_plan(plan).rstrip())
         return 0
 
     if args.command == "compare-size":
