@@ -32,3 +32,10 @@ def test_cli_scripts_are_declared() -> None:
 
     assert data["project"]["scripts"]["compression-demo"] == "compression_demo.cli:main"
     assert data["project"]["scripts"]["model-compression-demo"] == "compression_demo.cli:main"
+
+
+def test_python_floor_matches_ml_ecosystem() -> None:
+    data = load_pyproject()
+
+    assert data["project"]["requires-python"] == ">=3.11"
+    assert data["tool"]["ruff"]["target-version"] == "py311"

@@ -1,0 +1,5 @@
+{"text":"Question: Which customer segment has the highest timeout rate in the last 24 hours? Answer with the segment, rate, and likely infrastructure cause."}
+{"text":"Summarize this retrieval trace for an on-call engineer: the query used stale embeddings, two chunks came from archived policy docs, and the answer cited the wrong source."}
+{"text":"Write a concise SQL explanation for a product analyst comparing weekly activation, retained users, and expansion revenue across enterprise accounts."}
+{"text":"Given a long support conversation, extract the user-visible symptom, suspected root cause, mitigation, and follow-up owner."}
+{"text":"Explain why KV cache memory increases with context length and concurrency, using a production LLM serving example."}

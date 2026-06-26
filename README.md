@@ -1,9 +1,10 @@
-# Model Compression Demo and Selection Guide
+# LLM Serving Compression Demo and Selection Guide
 
 This directory is a standalone support project for a blog article about model
-compression and quantization approaches. It includes a production-oriented
-`llm-compressor` GPTQ W4A16 path, current industry alternatives, and a planner
-for choosing an algorithm, package, and GPU memory target.
+compression and quantization approaches. It focuses on text LLM serving:
+`llm-compressor` GPTQ W4A16 and FP8 paths, current industry alternatives, local
+GGUF deployment, vLLM serving commands, and quality gates for deciding whether a
+compressed checkpoint is safe to promote.
 
 The runnable planner and tests use only the Python standard library. The actual
 quantization paths are optional because this machine does not currently have
@@ -18,7 +19,8 @@ installed.
 - `compression_demo/`: importable planner, algorithm catalog, quality evals,
   and recipe helpers.
 - `examples/`: focused code examples for `llm-compressor`, bitsandbytes,
-  GPTQModel, vLLM serving, and perplexity comparison.
+  GPTQModel, vLLM serving, representative calibration, and perplexity
+  comparison.
 - `index.html`: standalone guide for choosing algorithms, packages, and
   GPU-memory targets.
 - `tests/`: pytest coverage for planner math, CLI behavior, quality evaluation,
@@ -31,9 +33,12 @@ From this directory:
 ```bash
 uv run python demo.py list-algorithms
 uv run python demo.py recipe --algorithm gptq-w4a16
-uv run python demo.py estimate --params-b 7 --scheme w4a16 --context 4096 --concurrency 4
-uv run python demo.py plan --params-b 7 --goal fit-memory --hardware ampere --context 4096 --concurrency 4
+uv run python demo.py estimate --model-preset llama3-8b --scheme w4a16 --context 4096 --concurrency 4
+uv run python demo.py plan --model-preset llama3-8b --goal fit-memory --hardware ampere --context 4096 --concurrency 4
+uv run python demo.py plan --model-preset llama3-8b --goal fit-memory --hardware apple
 uv run python demo.py quantize --dry-run
+uv run python demo.py quantize --calibration-file examples/representative_calibration.jsonl --dry-run
+uv run python demo.py serve-command --algorithm fp8-dynamic --fp8-kv-cache --enable-prefix-caching
 uv run python demo.py quality-eval --base-model Qwen/Qwen3-0.6B --compressed-model outputs/Qwen3-0.6B-W4A16 --dry-run
 uv run pytest
 ```
@@ -132,17 +137,42 @@ uv run python demo.py quantize \
   --algorithm gptq-w4a16 \
   --model Qwen/Qwen3-0.6B \
   --output-dir outputs/Qwen3-0.6B-W4A16 \
-  --dataset wikitext \
-  --dataset-config-name wikitext-2-raw-v1 \
+  --calibration-file examples/representative_calibration.jsonl \
+  --text-column text \
   --num-calibration-samples 256 \
   --max-seq-length 4096
 ```
 
+For a smoke test, leaving out `--calibration-file` uses WikiText. For a real
+checkpoint, pass a JSONL or text file that looks like production traffic:
+
+```bash
+uv run python demo.py quantize \
+  --algorithm gptq-w4a16 \
+  --model Qwen/Qwen3-0.6B \
+  --calibration-file traces/rag_queries.jsonl \
+  --text-column text
+```
+
+Good calibration sources include SQL assistant prompts, RAG traces, chat logs,
+support conversations, internal coding prompts, or any corpus that matches the
+shape and vocabulary of the deployed workload. Keep sensitive data out of the
+file or redact it before using it for calibration.
+
 Reference GPTQ recipe:
 
 ```python
+import json
+
+from datasets import Dataset
 from llmcompressor import oneshot
 from llmcompressor.modifiers.quantization import GPTQModifier
+
+rows = [
+    json.loads(line)
+    for line in open("examples/representative_calibration.jsonl", encoding="utf-8")
+    if line.strip()
+]
 
 recipe = GPTQModifier(
     scheme="W4A16",
@@ -152,12 +182,11 @@ recipe = GPTQModifier(
 
 oneshot(
     model="Qwen/Qwen3-0.6B",
-    dataset="wikitext",
-    dataset_config_name="wikitext-2-raw-v1",
+    dataset=Dataset.from_list(rows),
     recipe=recipe,
     output_dir="outputs/Qwen3-0.6B-W4A16",
     max_seq_length=4096,
-    num_calibration_samples=256,
+    num_calibration_samples=len(rows),
 )
 ```
 
@@ -173,6 +202,9 @@ uv run python demo.py quality-eval \
   --compressed-model outputs/Qwen3-0.6B-W4A16 \
   --mode all \
   --lm-eval-task hellaswag \
+  --lm-eval-limit 50 \
+  --max-perplexity-delta-pct 5 \
+  --max-task-regression 0.02 \
   --output-json reports/qwen3-0.6b-w4a16-quality.json
 ```
 
@@ -198,6 +230,31 @@ The implemented checks are:
   compressed models.
 - long-context anchor probe: synthetic long-context retrieval check to catch
   obvious cache/context regressions.
+
+By default `--mode all` includes the small `hellaswag` task with limit `50`,
+loads base and compressed models sequentially to reduce VRAM pressure, writes
+partial JSON after each completed phase when `--output-json` is set, and exits
+non-zero if a deployment gate fails. The JSON report contains a compact
+`summary.verdict` of `pass`, `fail`, or `needs_review`.
+
+## Model architecture inputs
+
+The memory planner needs layer count, hidden size, and KV-head ratio. Beginners
+can start with built-in presets:
+
+```bash
+uv run python demo.py plan --model-preset qwen3-0.6b --hardware ada --goal throughput
+uv run python demo.py plan --model-preset llama3-8b --hardware cpu
+```
+
+For a model that is not listed, pass a local Hugging Face `config.json`:
+
+```bash
+uv run python demo.py plan --params-b 13 --hf-config ./config.json --hardware hopper
+```
+
+If neither `--model-preset` nor `--hf-config` is provided, the CLI prints a
+warning that it is using generic 7B-style architecture assumptions.
 
 ## Formatting
 
@@ -255,10 +312,10 @@ and quality metric.
 
 This demo supports the compression and quantization article with:
 
-- `presentation/grouped_pdfs/04_compression_quantization.pdf`: local slides on
-  quantization, memory reduction, W8A16/W8A8, INT8/FP8, INT4/FP4, latency,
-  throughput, and benchmark tradeoffs.
-- `build_pdfs.py`: slide grouping comments for the image-based PDF.
+- executable LLM serving workflows for RTN W8A16, GPTQ W4A16, and dynamic FP8.
+- local-runtime guidance for GGUF CPU and Apple Silicon deployment.
+- explicit recipe stubs for AutoRound, NVFP4/MXFP4, and SVDQuant/Nunchaku
+  paths that are article-relevant but not executable in this beginner repo.
 - current upstream package docs and repositories linked from the HTML guide.
 
 The HTML guide is the reader-facing package, algorithm, and hardware selector.

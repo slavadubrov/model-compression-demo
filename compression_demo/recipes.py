@@ -2,9 +2,116 @@
 
 from __future__ import annotations
 
+import json
+import pathlib
+import shlex
 from textwrap import dedent
 
 from .catalog import ALGORITHMS
+
+EXECUTABLE_QUANTIZATION_ALGORITHMS = ("gptq-w4a16", "rtn-w8a16", "fp8-dynamic")
+
+_OUTPUT_SUFFIXES = {
+    "gptq-w4a16": "W4A16",
+    "rtn-w8a16": "W8A16",
+    "fp8-dynamic": "FP8-Dynamic",
+}
+
+
+def _model_slug(model: str) -> str:
+    return model.rstrip("/").split("/")[-1].replace(" ", "-")
+
+
+def default_output_dir(*, model: str, algorithm_key: str) -> str:
+    """Return the conventional output directory for a model and algorithm."""
+
+    suffix = _OUTPUT_SUFFIXES.get(algorithm_key, algorithm_key.replace("_", "-"))
+    return f"outputs/{_model_slug(model)}-{suffix}"
+
+
+def load_calibration_records(
+    calibration_file: str,
+    *,
+    text_column: str = "text",
+) -> list[dict[str, str]]:
+    """Load representative calibration records from JSONL or plain text."""
+
+    path = pathlib.Path(calibration_file)
+    if not path.exists():
+        raise FileNotFoundError(path)
+
+    records: list[dict[str, str]] = []
+    if path.suffix.lower() == ".jsonl":
+        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            if not line.strip():
+                continue
+            payload = json.loads(line)
+            if text_column not in payload:
+                raise ValueError(
+                    f"{path}:{line_number} does not contain text column {text_column!r}"
+                )
+            text = str(payload[text_column]).strip()
+            if text:
+                records.append({text_column: text})
+    else:
+        for text in path.read_text(encoding="utf-8").splitlines():
+            text = text.strip()
+            if text:
+                records.append({text_column: text})
+
+    if not records:
+        raise ValueError(f"{path} did not contain any calibration text")
+    return records
+
+
+def calibration_source_label(
+    *,
+    dataset: str,
+    dataset_config_name: str,
+    calibration_file: str | None,
+    text_column: str,
+) -> str:
+    """Describe whether calibration uses generic or representative data."""
+
+    if calibration_file:
+        return f"representative local file {calibration_file} (text column: {text_column})"
+    return f"generic demo dataset {dataset} / {dataset_config_name}"
+
+
+def _quantize_command(
+    *,
+    algorithm_key: str,
+    model: str,
+    output_dir: str,
+    dataset: str,
+    dataset_config_name: str,
+    calibration_file: str | None,
+    text_column: str,
+    num_calibration_samples: int,
+    max_seq_length: int,
+) -> str:
+    command = [
+        "uv",
+        "run",
+        "python",
+        "demo.py",
+        "quantize",
+        "--algorithm",
+        algorithm_key,
+        "--model",
+        model,
+        "--output-dir",
+        output_dir,
+        "--num-calibration-samples",
+        str(num_calibration_samples),
+        "--max-seq-length",
+        str(max_seq_length),
+    ]
+    if calibration_file:
+        command.extend(["--calibration-file", calibration_file, "--text-column", text_column])
+    else:
+        command.extend(["--dataset", dataset, "--dataset-config-name", dataset_config_name])
+    return " ".join(shlex.quote(part) for part in command)
 
 
 def recipe_snippet(algorithm_key: str) -> str:
@@ -104,7 +211,7 @@ def recipe_snippet(algorithm_key: str) -> str:
             from transformers import AutoModelForCausalLM, AutoTokenizer
 
             model_id = "Qwen/Qwen3-0.6B"
-            model = AutoModelForCausalLM.from_pretrained(model_id)
+            model = AutoModelForCausalLM.from_pretrained(model_id, device_map="auto")
             tokenizer = AutoTokenizer.from_pretrained(model_id)
 
             recipe = QuantizationModifier(
@@ -114,8 +221,19 @@ def recipe_snippet(algorithm_key: str) -> str:
             )
 
             oneshot(model=model, recipe=recipe)
-            model.save_pretrained("outputs/Qwen3-0.6B-FP8-Dynamic")
+            model.save_pretrained("outputs/Qwen3-0.6B-FP8-Dynamic", save_compressed=True)
             tokenizer.save_pretrained("outputs/Qwen3-0.6B-FP8-Dynamic")
+        """,
+        "autoround-w4a16": """
+            # AutoRound is listed as a roadmap recipe stub, not an executable path
+            # in this beginner demo. Use the upstream AutoRound package and validate
+            # the exported checkpoint against the same quality gates in this repo.
+            #
+            # Typical shape:
+            # 1. Install AutoRound for the target CUDA stack.
+            # 2. Calibrate on representative production-shaped prompts.
+            # 3. Export a W4A16-compatible checkpoint.
+            # 4. Run `quality-eval --mode all` before promotion.
         """,
         "bnb-nf4": """
             from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
@@ -153,8 +271,30 @@ def recipe_snippet(algorithm_key: str) -> str:
         "kv-cache-fp8": """
             # vLLM serving-side example. Confirm the exact flag names for your vLLM version.
             vllm serve ./outputs/Qwen3-0.6B-FP8-Dynamic \\
+              --quantization fp8 \\
               --kv-cache-dtype fp8 \\
-              --max-model-len 32768
+              --max-model-len 32768 \\
+              --enable-prefix-caching
+        """,
+        "nvfp4-mxfp4": """
+            # Recipe stub: NVFP4/MXFP4 is a hardware-specific Blackwell path.
+            # This demo tracks the decision point but does not execute it on a
+            # generic workstation.
+            #
+            # Before using it:
+            # 1. Confirm the exact Blackwell runtime, vLLM/ModelOpt/llm-compressor
+            #    versions, and checkpoint format support.
+            # 2. Calibrate on representative prompts, not WikiText alone.
+            # 3. Compare against FP8 and W4A16 baselines with `quality-eval`.
+        """,
+        "svdquant-nunchaku": """
+            # SVDQuant/Nunchaku are image-model and diffusion compression tools.
+            # They are outside this text-LLM serving demo's executable path.
+            #
+            # Use a separate image-model validation loop:
+            # 1. Pick model-specific calibration prompts.
+            # 2. Quantize with the upstream SVDQuant/Nunchaku workflow.
+            # 3. Compare latency, memory, and image quality on representative prompts.
         """,
         "distillation": """
             # Distillation is a training workflow, not a checkpoint-only compression recipe.
@@ -175,12 +315,31 @@ def dry_run_quantization_command(
     output_dir: str,
     dataset: str,
     dataset_config_name: str,
+    calibration_file: str | None = None,
+    text_column: str = "text",
     num_calibration_samples: int,
     max_seq_length: int,
 ) -> str:
     """Return the intended quantization run configuration."""
 
     algorithm = ALGORITHMS[algorithm_key]
+    calibration = calibration_source_label(
+        dataset=dataset,
+        dataset_config_name=dataset_config_name,
+        calibration_file=calibration_file,
+        text_column=text_column,
+    )
+    command = _quantize_command(
+        algorithm_key=algorithm_key,
+        model=model,
+        output_dir=output_dir,
+        dataset=dataset,
+        dataset_config_name=dataset_config_name,
+        calibration_file=calibration_file,
+        text_column=text_column,
+        num_calibration_samples=num_calibration_samples,
+        max_seq_length=max_seq_length,
+    )
     return dedent(
         f"""
         Quantization dry run
@@ -189,13 +348,42 @@ def dry_run_quantization_command(
         Package:   {algorithm.package}
         Model:     {model}
         Output:    {output_dir}
-        Dataset:   {dataset} / {dataset_config_name}
+        Calibration: {calibration}
         Samples:   {num_calibration_samples}
         Sequence:  {max_seq_length}
+
+        Exact command:
+        {command}
 
         Re-run without --dry-run in an environment with the GPU stack installed.
         """
     ).strip()
+
+
+def build_vllm_serve_command(
+    *,
+    algorithm_key: str,
+    model_path: str,
+    max_model_len: int = 4096,
+    tensor_parallel_size: int = 1,
+    port: int = 8000,
+    enable_prefix_caching: bool = False,
+    fp8_kv_cache: bool = False,
+) -> str:
+    """Return a vLLM serving command matched to the selected algorithm."""
+
+    command = ["vllm", "serve", model_path, "--max-model-len", str(max_model_len)]
+    if algorithm_key in {"fp8-dynamic", "kv-cache-fp8"}:
+        command.extend(["--quantization", "fp8"])
+    if fp8_kv_cache or algorithm_key == "kv-cache-fp8":
+        command.extend(["--kv-cache-dtype", "fp8"])
+    if enable_prefix_caching or algorithm_key == "kv-cache-fp8":
+        command.append("--enable-prefix-caching")
+    if tensor_parallel_size > 1:
+        command.extend(["--tensor-parallel-size", str(tensor_parallel_size)])
+    if port != 8000:
+        command.extend(["--port", str(port)])
+    return " ".join(shlex.quote(part) for part in command)
 
 
 def run_llmcompressor_quantization(
@@ -205,6 +393,8 @@ def run_llmcompressor_quantization(
     output_dir: str,
     dataset: str,
     dataset_config_name: str,
+    calibration_file: str | None = None,
+    text_column: str = "text",
     num_calibration_samples: int,
     max_seq_length: int,
 ) -> None:
@@ -219,15 +409,22 @@ def run_llmcompressor_quantization(
         from llmcompressor.modifiers.quantization import GPTQModifier
 
         recipe = GPTQModifier(scheme="W4A16", targets="Linear", ignore=["lm_head"])
-        oneshot(
-            model=model,
-            dataset=dataset,
-            dataset_config_name=dataset_config_name,
-            recipe=recipe,
-            output_dir=output_dir,
-            max_seq_length=max_seq_length,
-            num_calibration_samples=num_calibration_samples,
-        )
+        oneshot_kwargs = {
+            "model": model,
+            "recipe": recipe,
+            "output_dir": output_dir,
+            "max_seq_length": max_seq_length,
+            "num_calibration_samples": num_calibration_samples,
+        }
+        if calibration_file:
+            from datasets import Dataset
+
+            records = load_calibration_records(calibration_file, text_column=text_column)
+            oneshot_kwargs["dataset"] = Dataset.from_list(records)
+        else:
+            oneshot_kwargs["dataset"] = dataset
+            oneshot_kwargs["dataset_config_name"] = dataset_config_name
+        oneshot(**oneshot_kwargs)
         return
 
     if algorithm_key == "rtn-w8a16":
@@ -243,11 +440,11 @@ def run_llmcompressor_quantization(
         from llmcompressor.modifiers.quantization import QuantizationModifier
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
-        hf_model = AutoModelForCausalLM.from_pretrained(model)
+        hf_model = AutoModelForCausalLM.from_pretrained(model, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(model)
         recipe = QuantizationModifier(targets="Linear", scheme="FP8_DYNAMIC", ignore=["lm_head"])
         oneshot(model=hf_model, recipe=recipe)
-        hf_model.save_pretrained(output_dir)
+        hf_model.save_pretrained(output_dir, save_compressed=True)
         tokenizer.save_pretrained(output_dir)
         return
 

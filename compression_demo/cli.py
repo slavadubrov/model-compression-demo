@@ -11,13 +11,26 @@ from html.parser import HTMLParser
 
 from .catalog import ALGORITHMS, ARCH_TO_COMPUTE_CAPABILITY, GPU_INSTANCES, SCHEMES
 from .evals import (
+    DEFAULT_LM_EVAL_LIMIT,
+    DEFAULT_LM_EVAL_TASK,
+    DEFAULT_MAX_PERPLEXITY_DELTA_PCT,
+    DEFAULT_MAX_TASK_REGRESSION,
     DEFAULT_PROMPTS,
+    QualityGateError,
     build_quality_eval_plan,
     format_quality_eval_plan,
     run_quality_eval,
 )
+from .model_specs import MODEL_PRESETS, architecture_from_hf_config, generic_architecture
 from .planner import build_plan, estimate_serving_memory, select_algorithm
-from .recipes import dry_run_quantization_command, recipe_snippet, run_llmcompressor_quantization
+from .recipes import (
+    EXECUTABLE_QUANTIZATION_ALGORITHMS,
+    build_vllm_serve_command,
+    default_output_dir,
+    dry_run_quantization_command,
+    recipe_snippet,
+    run_llmcompressor_quantization,
+)
 
 
 def _gib(value: float) -> str:
@@ -61,6 +74,37 @@ def _format_bytes(nbytes: int) -> str:
 
 def _installed(name: str) -> bool:
     return importlib.util.find_spec(name) is not None
+
+
+def _resolve_architecture(args: argparse.Namespace):
+    if getattr(args, "hf_config", None):
+        return architecture_from_hf_config(args.hf_config)
+    preset = getattr(args, "model_preset", None)
+    if preset:
+        return MODEL_PRESETS[preset]
+    return generic_architecture(
+        layers=args.layers,
+        hidden_size=args.hidden_size,
+        kv_head_ratio=args.kv_head_ratio,
+    )
+
+
+def _resolve_params_b(args: argparse.Namespace, architecture) -> float:
+    if args.params_b is not None:
+        return args.params_b
+    if architecture.params_b is not None:
+        return architecture.params_b
+    raise ValueError("Pass --params-b or choose a --model-preset with a parameter count.")
+
+
+def _print_architecture_notes(architecture) -> None:
+    print(f"Architecture:     {architecture.name} ({architecture.source})")
+    print(
+        "Layers/hidden/KV: "
+        f"{architecture.layers} / {architecture.hidden_size} / {architecture.kv_head_ratio:.3f}"
+    )
+    for note in architecture.notes:
+        print(f"Note:             {note}")
 
 
 class _HTMLSmokeParser(HTMLParser):
@@ -112,9 +156,9 @@ def build_parser() -> argparse.ArgumentParser:
     estimate = subparsers.add_parser(
         "estimate", help="Estimate serving memory for a model and scheme."
     )
-    estimate.add_argument(
-        "--params-b", type=float, required=True, help="Model parameter count in billions."
-    )
+    estimate.add_argument("--params-b", type=float, help="Model parameter count in billions.")
+    estimate.add_argument("--model-preset", choices=sorted(MODEL_PRESETS))
+    estimate.add_argument("--hf-config", help="Path to a local Hugging Face config.json.")
     estimate.add_argument("--scheme", choices=sorted(SCHEMES), default="w4a16")
     estimate.add_argument("--layers", type=int, default=32)
     estimate.add_argument("--hidden-size", type=int, default=4096)
@@ -125,7 +169,9 @@ def build_parser() -> argparse.ArgumentParser:
     estimate.add_argument("--json", action="store_true")
 
     plan = subparsers.add_parser("plan", help="Choose an algorithm and GPU memory target.")
-    plan.add_argument("--params-b", type=float, required=True)
+    plan.add_argument("--params-b", type=float)
+    plan.add_argument("--model-preset", choices=sorted(MODEL_PRESETS))
+    plan.add_argument("--hf-config", help="Path to a local Hugging Face config.json.")
     plan.add_argument(
         "--goal", default="fit-memory", help="Examples: fit-memory, quality, throughput, qlora."
     )
@@ -144,15 +190,29 @@ def build_parser() -> argparse.ArgumentParser:
 
     quantize = subparsers.add_parser("quantize", help="Run or dry-run llm-compressor quantization.")
     quantize.add_argument(
-        "--algorithm", choices=["gptq-w4a16", "rtn-w8a16", "fp8-dynamic"], default="gptq-w4a16"
+        "--algorithm", choices=EXECUTABLE_QUANTIZATION_ALGORITHMS, default="gptq-w4a16"
     )
     quantize.add_argument("--model", default="Qwen/Qwen3-0.6B")
-    quantize.add_argument("--output-dir", default="outputs/Qwen3-0.6B-W4A16")
+    quantize.add_argument("--output-dir")
     quantize.add_argument("--dataset", default="wikitext")
     quantize.add_argument("--dataset-config-name", default="wikitext-2-raw-v1")
+    quantize.add_argument(
+        "--calibration-file",
+        help="Representative JSONL or text calibration file. Overrides --dataset.",
+    )
+    quantize.add_argument("--text-column", default="text")
     quantize.add_argument("--num-calibration-samples", type=int, default=256)
     quantize.add_argument("--max-seq-length", type=int, default=4096)
     quantize.add_argument("--dry-run", action="store_true")
+
+    serve = subparsers.add_parser("serve-command", help="Print a vLLM serve command.")
+    serve.add_argument("--algorithm", choices=sorted(ALGORITHMS), default="gptq-w4a16")
+    serve.add_argument("--model-path")
+    serve.add_argument("--max-model-len", type=int)
+    serve.add_argument("--tensor-parallel-size", type=int, default=1)
+    serve.add_argument("--port", type=int, default=8000)
+    serve.add_argument("--fp8-kv-cache", action="store_true")
+    serve.add_argument("--enable-prefix-caching", action="store_true")
 
     compare = subparsers.add_parser(
         "compare-size", help="Compare base and compressed model folder sizes."
@@ -175,9 +235,29 @@ def build_parser() -> argparse.ArgumentParser:
     quality.add_argument("--dataset", default="wikitext")
     quality.add_argument("--dataset-config-name", default="wikitext-2-raw-v1")
     quality.add_argument("--dataset-split", default="test")
-    quality.add_argument("--lm-eval-task")
-    quality.add_argument("--lm-eval-limit", type=int)
+    quality.add_argument(
+        "--lm-eval-task",
+        help=f"Task name for lm_eval; defaults to {DEFAULT_LM_EVAL_TASK!r} in all/lm-eval mode.",
+    )
+    quality.add_argument("--lm-eval-limit", type=int, default=DEFAULT_LM_EVAL_LIMIT)
     quality.add_argument("--long-context-tokens", type=int, default=4096)
+    quality.add_argument(
+        "--max-perplexity-delta-pct",
+        type=float,
+        default=DEFAULT_MAX_PERPLEXITY_DELTA_PCT,
+    )
+    quality.add_argument("--max-task-regression", type=float, default=DEFAULT_MAX_TASK_REGRESSION)
+    quality.add_argument(
+        "--allow-long-context-anchor-miss",
+        dest="require_long_context_anchor",
+        action="store_false",
+    )
+    quality.add_argument(
+        "--eval-loading",
+        choices=["sequential", "together"],
+        default="sequential",
+        help="Load base and compressed models sequentially or in the same process.",
+    )
     quality.add_argument("--max-new-tokens", type=int, default=80)
     quality.add_argument("--max-tokens", type=int, default=5000)
     quality.add_argument("--stride", type=int, default=512)
@@ -195,7 +275,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
 
     if args.command == "list-algorithms":
         _print_algorithm_table()
@@ -206,19 +287,25 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "estimate":
+        architecture = _resolve_architecture(args)
+        try:
+            params_b = _resolve_params_b(args, architecture)
+        except ValueError as exc:
+            parser.error(str(exc))
         estimate = estimate_serving_memory(
-            params_b=args.params_b,
+            params_b=params_b,
             scheme_key=args.scheme,
-            layers=args.layers,
-            hidden_size=args.hidden_size,
+            layers=architecture.layers,
+            hidden_size=architecture.hidden_size,
             context_tokens=args.context,
             concurrency=args.concurrency,
             kv_cache_bits=args.kv_cache_bits,
-            kv_head_ratio=args.kv_head_ratio,
+            kv_head_ratio=architecture.kv_head_ratio,
         )
         if args.json:
             print(json.dumps(estimate.__dict__, indent=2, sort_keys=True))
         else:
+            _print_architecture_notes(architecture)
             print(f"Scheme:           {args.scheme}")
             print(f"Weights:          {_gib(estimate.weight_gib)}")
             print(f"KV cache:         {_gib(estimate.kv_cache_gib)}")
@@ -228,33 +315,47 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "plan":
+        architecture = _resolve_architecture(args)
+        try:
+            params_b = _resolve_params_b(args, architecture)
+        except ValueError as exc:
+            parser.error(str(exc))
         algorithm_key = args.algorithm or select_algorithm(
             goal=args.goal,
             hardware=args.hardware,
             deployment=args.deployment,
         )
         plan = build_plan(
-            params_b=args.params_b,
+            params_b=params_b,
             algorithm_key=algorithm_key,
-            layers=args.layers,
-            hidden_size=args.hidden_size,
+            layers=architecture.layers,
+            hidden_size=architecture.hidden_size,
             context_tokens=args.context,
             concurrency=args.concurrency,
             kv_cache_bits=args.kv_cache_bits,
-            kv_head_ratio=args.kv_head_ratio,
+            kv_head_ratio=architecture.kv_head_ratio,
         )
         algorithm = ALGORITHMS[algorithm_key]
         scheme = SCHEMES[plan.scheme_key]
+        _print_architecture_notes(architecture)
         print(f"Algorithm:         {algorithm.name}")
         print(f"Scheme:            {scheme.label}")
         print(f"Package:           {algorithm.package}")
-        print(f"Serving target:    {_gib(plan.serving_memory.total_gib)}")
+        print(f"{plan.serving_target_label}: {_gib(plan.serving_memory.total_gib)}")
         print(f"Compression CPU:   {_gib(plan.compression_memory.cpu_gib)}")
-        print(f"Compression GPU:   {_gib(plan.compression_memory.gpu_gib)}")
-        print("Recommended GPUs:")
-        for rec in plan.recommendations:
-            marker = "fits" if rec.fits else "needs sharding"
-            print(f"  - {rec.instance.name}: {marker}; {rec.reason}")
+        if plan.compression_memory.gpu_gib > 0:
+            print(f"Compression GPU:   {_gib(plan.compression_memory.gpu_gib)}")
+        else:
+            print("Compression GPU:   not required for this local conversion path")
+        if plan.local_recommendations:
+            print("Recommended local runtimes:")
+            for rec in plan.local_recommendations:
+                print(f"  - {rec.name}: {_gib(rec.memory_target_gib)}; {rec.reason}")
+        else:
+            print("Recommended GPUs:")
+            for rec in plan.recommendations:
+                marker = "fits" if rec.fits else "needs sharding"
+                print(f"  - {rec.instance.name}: {marker}; {rec.reason}")
         print("Notes:")
         for note in plan.notes:
             print(f"  - {note}")
@@ -265,14 +366,20 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "quantize":
+        output_dir = args.output_dir or default_output_dir(
+            model=args.model,
+            algorithm_key=args.algorithm,
+        )
         if args.dry_run:
             print(
                 dry_run_quantization_command(
                     algorithm_key=args.algorithm,
                     model=args.model,
-                    output_dir=args.output_dir,
+                    output_dir=output_dir,
                     dataset=args.dataset,
                     dataset_config_name=args.dataset_config_name,
+                    calibration_file=args.calibration_file,
+                    text_column=args.text_column,
                     num_calibration_samples=args.num_calibration_samples,
                     max_seq_length=args.max_seq_length,
                 )
@@ -281,12 +388,36 @@ def main(argv: list[str] | None = None) -> int:
         run_llmcompressor_quantization(
             algorithm_key=args.algorithm,
             model=args.model,
-            output_dir=args.output_dir,
+            output_dir=output_dir,
             dataset=args.dataset,
             dataset_config_name=args.dataset_config_name,
+            calibration_file=args.calibration_file,
+            text_column=args.text_column,
             num_calibration_samples=args.num_calibration_samples,
             max_seq_length=args.max_seq_length,
         )
+        return 0
+
+    if args.command == "serve-command":
+        model_path = args.model_path or default_output_dir(
+            model="Qwen/Qwen3-0.6B",
+            algorithm_key=args.algorithm,
+        )
+        max_model_len = args.max_model_len
+        if max_model_len is None:
+            max_model_len = 32768 if args.algorithm in {"fp8-dynamic", "kv-cache-fp8"} else 4096
+        print(
+            build_vllm_serve_command(
+                algorithm_key=args.algorithm,
+                model_path=model_path,
+                max_model_len=max_model_len,
+                tensor_parallel_size=args.tensor_parallel_size,
+                port=args.port,
+                fp8_kv_cache=args.fp8_kv_cache,
+                enable_prefix_caching=args.enable_prefix_caching,
+            )
+        )
+        print("# Check your installed vLLM version because FP8 flag names can vary.")
         return 0
 
     if args.command == "compare-size":
@@ -309,21 +440,31 @@ def main(argv: list[str] | None = None) -> int:
             dataset_config_name=args.dataset_config_name,
             dataset_split=args.dataset_split,
             lm_eval_task=args.lm_eval_task,
+            lm_eval_limit=args.lm_eval_limit,
             long_context_tokens=args.long_context_tokens,
+            max_perplexity_delta_pct=args.max_perplexity_delta_pct,
+            max_task_regression=args.max_task_regression,
+            require_long_context_anchor=args.require_long_context_anchor,
             output_json=args.output_json,
         )
         if args.dry_run:
             print(format_quality_eval_plan(plan))
             return 0
-        results = run_quality_eval(
-            plan=plan,
-            max_new_tokens=args.max_new_tokens,
-            max_tokens=args.max_tokens,
-            stride=args.stride,
-            lm_eval_limit=args.lm_eval_limit,
-        )
-        print(json.dumps(results, indent=2, sort_keys=True))
-        return 0
+        try:
+            results = run_quality_eval(
+                plan=plan,
+                max_new_tokens=args.max_new_tokens,
+                max_tokens=args.max_tokens,
+                stride=args.stride,
+                lm_eval_limit=args.lm_eval_limit,
+                sequential_models=args.eval_loading == "sequential",
+            )
+        except QualityGateError as exc:
+            print(json.dumps(exc.results, indent=2, sort_keys=True))
+            return 2
+        else:
+            print(json.dumps(results, indent=2, sort_keys=True))
+            return 0
 
     if args.command == "env":
         modules = [

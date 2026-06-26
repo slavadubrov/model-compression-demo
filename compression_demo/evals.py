@@ -7,9 +7,12 @@ installation.
 
 from __future__ import annotations
 
+import gc
 import importlib.util
 import json
+import re
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -21,6 +24,18 @@ DEFAULT_PROMPTS = (
 )
 
 QUALITY_EVAL_INSTALL_COMMAND = "uv pip install torch transformers datasets lm_eval"
+DEFAULT_LM_EVAL_TASK = "hellaswag"
+DEFAULT_LM_EVAL_LIMIT = 50
+DEFAULT_MAX_PERPLEXITY_DELTA_PCT = 5.0
+DEFAULT_MAX_TASK_REGRESSION = 0.02
+
+
+class QualityGateError(RuntimeError):
+    """Raised when a quality evaluation proves a deployment gate failed."""
+
+    def __init__(self, message: str, results: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.results = results
 
 
 @dataclass(frozen=True)
@@ -34,7 +49,11 @@ class QualityEvalPlan:
     dataset_config_name: str
     dataset_split: str
     lm_eval_task: str | None
+    lm_eval_limit: int | None
     long_context_tokens: int
+    max_perplexity_delta_pct: float | None
+    max_task_regression: float | None
+    require_long_context_anchor: bool
     required_modules: tuple[str, ...]
     output_json: str | None
 
@@ -49,7 +68,11 @@ class QualityEvalPlan:
             "dataset_config_name": self.dataset_config_name,
             "dataset_split": self.dataset_split,
             "lm_eval_task": self.lm_eval_task,
+            "lm_eval_limit": self.lm_eval_limit,
             "long_context_tokens": self.long_context_tokens,
+            "max_perplexity_delta_pct": self.max_perplexity_delta_pct,
+            "max_task_regression": self.max_task_regression,
+            "require_long_context_anchor": self.require_long_context_anchor,
             "required_modules": list(self.required_modules),
             "output_json": self.output_json,
         }
@@ -98,9 +121,15 @@ def build_quality_eval_plan(
     dataset_config_name: str = "wikitext-2-raw-v1",
     dataset_split: str = "test",
     lm_eval_task: str | None = None,
+    lm_eval_limit: int | None = DEFAULT_LM_EVAL_LIMIT,
     long_context_tokens: int = 4096,
+    max_perplexity_delta_pct: float | None = DEFAULT_MAX_PERPLEXITY_DELTA_PCT,
+    max_task_regression: float | None = DEFAULT_MAX_TASK_REGRESSION,
+    require_long_context_anchor: bool = True,
     output_json: str | None = None,
 ) -> QualityEvalPlan:
+    if mode in {"all", "lm-eval"} and lm_eval_task is None:
+        lm_eval_task = DEFAULT_LM_EVAL_TASK
     checks = _checks_for_mode(mode, lm_eval_task, long_context_tokens)
     return QualityEvalPlan(
         base_model=base_model,
@@ -112,7 +141,11 @@ def build_quality_eval_plan(
         dataset_config_name=dataset_config_name,
         dataset_split=dataset_split,
         lm_eval_task=lm_eval_task,
+        lm_eval_limit=lm_eval_limit,
         long_context_tokens=long_context_tokens,
+        max_perplexity_delta_pct=max_perplexity_delta_pct,
+        max_task_regression=max_task_regression,
+        require_long_context_anchor=require_long_context_anchor,
         required_modules=_required_modules(checks),
         output_json=output_json,
     )
@@ -120,6 +153,14 @@ def build_quality_eval_plan(
 
 def format_quality_eval_plan(plan: QualityEvalPlan) -> str:
     missing = [module for module in plan.required_modules if not _module_available(module)]
+    ppl_delta = (
+        f"{plan.max_perplexity_delta_pct}%"
+        if plan.max_perplexity_delta_pct is not None
+        else "disabled"
+    )
+    task_drop = (
+        str(plan.max_task_regression) if plan.max_task_regression is not None else "disabled"
+    )
     lines = [
         "Quality evaluation plan",
         "-----------------------",
@@ -136,12 +177,16 @@ def format_quality_eval_plan(plan: QualityEvalPlan) -> str:
             f"Dataset:          {plan.dataset} / {plan.dataset_config_name} / {plan.dataset_split}",
             f"Long context:     {plan.long_context_tokens} tokens",
             f"Output JSON:      {plan.output_json or '(not requested)'}",
+            f"Max PPL delta:    {ppl_delta}",
+            f"Max task drop:    {task_drop}",
+            f"Require anchor:   {plan.require_long_context_anchor}",
             "Required modules:",
             *[f"  - {module}" for module in plan.required_modules],
         ]
     )
     if plan.lm_eval_task:
         lines.append(f"lm_eval task:     {plan.lm_eval_task}")
+        lines.append(f"lm_eval limit:    {plan.lm_eval_limit or '(no limit)'}")
     if missing:
         lines.extend(
             [
@@ -178,6 +223,15 @@ def _load_causal_lm(model_path: str):
     return model, tokenizer
 
 
+def _clear_model_cache() -> None:
+    gc.collect()
+    if _module_available("torch"):
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+
 def _generate(model, tokenizer, prompt: str, max_new_tokens: int) -> str:
     inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
     outputs = model.generate(
@@ -196,24 +250,44 @@ def compare_generations(
     compressed_model: str,
     prompts: tuple[str, ...],
     max_new_tokens: int,
+    sequential_models: bool = True,
 ) -> list[dict[str, str]]:
-    base, base_tokenizer = _load_causal_lm(base_model)
-    compressed, compressed_tokenizer = _load_causal_lm(compressed_model)
-    rows = []
-    for prompt in prompts:
-        rows.append(
-            {
-                "prompt": prompt,
-                "base_response": _generate(base, base_tokenizer, prompt, max_new_tokens),
-                "compressed_response": _generate(
-                    compressed,
-                    compressed_tokenizer,
-                    prompt,
-                    max_new_tokens,
-                ),
-            }
+    if sequential_models:
+        base, base_tokenizer = _load_causal_lm(base_model)
+        base_responses = [
+            _generate(base, base_tokenizer, prompt, max_new_tokens) for prompt in prompts
+        ]
+        del base, base_tokenizer
+        _clear_model_cache()
+
+        compressed, compressed_tokenizer = _load_causal_lm(compressed_model)
+        compressed_responses = [
+            _generate(compressed, compressed_tokenizer, prompt, max_new_tokens)
+            for prompt in prompts
+        ]
+        del compressed, compressed_tokenizer
+        _clear_model_cache()
+    else:
+        base, base_tokenizer = _load_causal_lm(base_model)
+        compressed, compressed_tokenizer = _load_causal_lm(compressed_model)
+        base_responses = [
+            _generate(base, base_tokenizer, prompt, max_new_tokens) for prompt in prompts
+        ]
+        compressed_responses = [
+            _generate(compressed, compressed_tokenizer, prompt, max_new_tokens)
+            for prompt in prompts
+        ]
+
+    return [
+        {
+            "prompt": prompt,
+            "base_response": base_response,
+            "compressed_response": compressed_response,
+        }
+        for prompt, base_response, compressed_response in zip(
+            prompts, base_responses, compressed_responses, strict=True
         )
-    return rows
+    ]
 
 
 def calculate_perplexity(
@@ -260,6 +334,8 @@ def compare_perplexity(
     dataset_split: str,
     max_tokens: int,
     stride: int,
+    sequential_models: bool = True,
+    checkpoint: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, float]:
     _require_modules("datasets")
     from datasets import load_dataset
@@ -267,10 +343,16 @@ def compare_perplexity(
     data = load_dataset(dataset, dataset_config_name, split=dataset_split)
     texts = list(data["text"])
     base, base_tokenizer = _load_causal_lm(base_model)
-    compressed, compressed_tokenizer = _load_causal_lm(compressed_model)
     base_ppl = calculate_perplexity(
         base, base_tokenizer, texts, max_tokens=max_tokens, stride=stride
     )
+    if checkpoint:
+        checkpoint({"perplexity": {"base_perplexity": base_ppl, "status": "base_complete"}})
+    if sequential_models:
+        del base, base_tokenizer
+        _clear_model_cache()
+
+    compressed, compressed_tokenizer = _load_causal_lm(compressed_model)
     compressed_ppl = calculate_perplexity(
         compressed,
         compressed_tokenizer,
@@ -278,6 +360,9 @@ def compare_perplexity(
         max_tokens=max_tokens,
         stride=stride,
     )
+    if sequential_models:
+        del compressed, compressed_tokenizer
+        _clear_model_cache()
     return {
         "base_perplexity": base_ppl,
         "compressed_perplexity": compressed_ppl,
@@ -306,6 +391,7 @@ def compare_long_context(
     compressed_model: str,
     long_context_tokens: int,
     max_new_tokens: int,
+    sequential_models: bool = True,
 ) -> dict[str, Any]:
     prompt = build_long_context_prompt(long_context_tokens, base_model)
     rows = compare_generations(
@@ -313,6 +399,7 @@ def compare_long_context(
         compressed_model=compressed_model,
         prompts=(prompt,),
         max_new_tokens=max_new_tokens,
+        sequential_models=sequential_models,
     )
     anchor = "compressed models must preserve long-context retrieval"
     row = rows[0]
@@ -363,22 +450,138 @@ def run_lm_eval_pair(
     return results
 
 
+def _write_results_if_requested(results: dict[str, Any], output_json: str | None) -> None:
+    if output_json:
+        output_path = Path(output_json)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(results, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _extract_json_object(text: str) -> dict[str, Any] | None:
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    try:
+        payload = json.loads(text[start : end + 1])
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _extract_primary_lm_eval_score(stdout: str) -> float | None:
+    payload = _extract_json_object(stdout)
+    if not payload:
+        return None
+    results = payload.get("results")
+    if not isinstance(results, dict) or not results:
+        return None
+    first_task = next(iter(results.values()))
+    if not isinstance(first_task, dict):
+        return None
+    preferred = (
+        "acc_norm,none",
+        "acc,none",
+        "exact_match,none",
+        "f1,none",
+        "acc_norm",
+        "acc",
+        "exact_match",
+        "f1",
+    )
+    for key in preferred:
+        value = first_task.get(key)
+        if isinstance(value, int | float):
+            return float(value)
+    for key, value in first_task.items():
+        if re.search(r"(acc|exact|f1)", key) and isinstance(value, int | float):
+            return float(value)
+    return None
+
+
+def summarize_quality_results(
+    results: dict[str, Any],
+    *,
+    max_perplexity_delta_pct: float | None,
+    max_task_regression: float | None,
+    require_long_context_anchor: bool,
+) -> dict[str, Any]:
+    """Return a compact pass/fail/needs_review verdict for quality results."""
+
+    failures: list[str] = []
+    warnings: list[str] = []
+
+    perplexity = results.get("perplexity")
+    if isinstance(perplexity, dict) and max_perplexity_delta_pct is not None:
+        delta_pct = perplexity.get("relative_delta_pct")
+        if isinstance(delta_pct, int | float) and delta_pct > max_perplexity_delta_pct:
+            failures.append(
+                f"perplexity regression {delta_pct:.2f}% exceeds {max_perplexity_delta_pct:.2f}%"
+            )
+
+    long_context = results.get("long_context")
+    if isinstance(long_context, dict):
+        base_anchor = bool(long_context.get("base_contains_anchor"))
+        compressed_anchor = bool(long_context.get("compressed_contains_anchor"))
+        if require_long_context_anchor and not compressed_anchor:
+            failures.append("compressed model missed the long-context anchor")
+        if not base_anchor:
+            warnings.append("base model missed the long-context anchor; review the probe")
+
+    lm_eval = results.get("lm_eval")
+    if isinstance(lm_eval, dict):
+        for label in ("base", "compressed"):
+            run = lm_eval.get(label)
+            if isinstance(run, dict) and run.get("returncode") != 0:
+                failures.append(f"lm_eval {label} run exited with {run.get('returncode')}")
+
+        if max_task_regression is not None:
+            base_run = lm_eval.get("base")
+            compressed_run = lm_eval.get("compressed")
+            if isinstance(base_run, dict) and isinstance(compressed_run, dict):
+                base_score = _extract_primary_lm_eval_score(str(base_run.get("stdout", "")))
+                compressed_score = _extract_primary_lm_eval_score(
+                    str(compressed_run.get("stdout", ""))
+                )
+                if base_score is not None and compressed_score is not None:
+                    regression = base_score - compressed_score
+                    if regression > max_task_regression:
+                        failures.append(
+                            f"task metric regression {regression:.4f} exceeds "
+                            f"{max_task_regression:.4f}"
+                        )
+                elif not failures:
+                    warnings.append("could not parse lm_eval scores; review task metrics manually")
+
+    verdict = "fail" if failures else "needs_review" if warnings else "pass"
+    return {"verdict": verdict, "failures": failures, "warnings": warnings}
+
+
 def run_quality_eval(
     *,
     plan: QualityEvalPlan,
     max_new_tokens: int,
     max_tokens: int,
     stride: int,
-    lm_eval_limit: int | None,
+    lm_eval_limit: int | None = None,
+    sequential_models: bool = True,
 ) -> dict[str, Any]:
     results: dict[str, Any] = {"plan": plan.to_dict()}
+    output_json = plan.output_json
+
+    def checkpoint(partial: dict[str, Any]) -> None:
+        results.update(partial)
+        _write_results_if_requested(results, output_json)
+
     if "generation comparison" in plan.checks:
         results["generation"] = compare_generations(
             base_model=plan.base_model,
             compressed_model=plan.compressed_model,
             prompts=plan.prompts,
             max_new_tokens=max_new_tokens,
+            sequential_models=sequential_models,
         )
+        _write_results_if_requested(results, output_json)
     if "perplexity comparison" in plan.checks:
         results["perplexity"] = compare_perplexity(
             base_model=plan.base_model,
@@ -388,14 +591,19 @@ def run_quality_eval(
             dataset_split=plan.dataset_split,
             max_tokens=max_tokens,
             stride=stride,
+            sequential_models=sequential_models,
+            checkpoint=checkpoint,
         )
+        _write_results_if_requested(results, output_json)
     if "long-context anchor probe" in plan.checks:
         results["long_context"] = compare_long_context(
             base_model=plan.base_model,
             compressed_model=plan.compressed_model,
             long_context_tokens=plan.long_context_tokens,
             max_new_tokens=max_new_tokens,
+            sequential_models=sequential_models,
         )
+        _write_results_if_requested(results, output_json)
     if "task metrics via lm_eval" in plan.checks:
         if not plan.lm_eval_task:
             raise ValueError("lm_eval task is required for task metrics")
@@ -403,10 +611,17 @@ def run_quality_eval(
             base_model=plan.base_model,
             compressed_model=plan.compressed_model,
             task=plan.lm_eval_task,
-            limit=lm_eval_limit,
+            limit=lm_eval_limit if lm_eval_limit is not None else plan.lm_eval_limit,
         )
-    if plan.output_json:
-        output_path = Path(plan.output_json)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(json.dumps(results, indent=2, sort_keys=True), encoding="utf-8")
+        _write_results_if_requested(results, output_json)
+
+    results["summary"] = summarize_quality_results(
+        results,
+        max_perplexity_delta_pct=plan.max_perplexity_delta_pct,
+        max_task_regression=plan.max_task_regression,
+        require_long_context_anchor=plan.require_long_context_anchor,
+    )
+    _write_results_if_requested(results, output_json)
+    if results["summary"]["verdict"] == "fail":
+        raise QualityGateError("quality evaluation failed deployment gates", results)
     return results

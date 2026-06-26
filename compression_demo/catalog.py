@@ -261,6 +261,17 @@ ALGORITHMS: dict[str, CompressionAlgorithm] = {
         ),
         status="production default on modern GPUs",
     ),
+    "autoround-w4a16": CompressionAlgorithm(
+        key="autoround-w4a16",
+        name="AutoRound W4A16",
+        family="learned weight rounding",
+        package="AutoRound, llm-compressor integrations where available",
+        scheme_key="w4a16",
+        calibration="representative text set",
+        best_for="Researching learned rounding as an alternative to GPTQ/AWQ on supported stacks.",
+        avoid_when="You need the shortest stable production path in this demo today.",
+        status="recipe stub only; not executable in this demo",
+    ),
     "kv-cache-fp8": CompressionAlgorithm(
         key="kv-cache-fp8",
         name="FP8 KV cache quantization",
@@ -273,6 +284,30 @@ ALGORITHMS: dict[str, CompressionAlgorithm] = {
             "Your workload is short prompt, low concurrency, or quality regression is untested."
         ),
         status="advanced production/experimental by format",
+    ),
+    "nvfp4-mxfp4": CompressionAlgorithm(
+        key="nvfp4-mxfp4",
+        name="NVFP4/MXFP4 low-precision path",
+        family="hardware-specific low precision",
+        package="llm-compressor, NVIDIA ModelOpt, Blackwell-class runtimes",
+        scheme_key="nvfp4-mxfp4",
+        calibration="representative text set",
+        best_for=(
+            "Blackwell experiments where the runtime and checkpoint format explicitly support FP4."
+        ),
+        avoid_when="You are not on a verified Blackwell software and hardware stack.",
+        status="recipe stub only; hardware-specific",
+    ),
+    "svdquant-nunchaku": CompressionAlgorithm(
+        key="svdquant-nunchaku",
+        name="SVDQuant / Nunchaku image-model path",
+        family="diffusion and image-model compression",
+        package="SVDQuant, Nunchaku",
+        scheme_key="w4afp8",
+        calibration="image-generation prompts and model-specific calibration",
+        best_for="Image-model and diffusion compression outside the LLM serving workflow.",
+        avoid_when="You are quantizing text-only LLMs for vLLM serving.",
+        status="non-executable roadmap stub; separate runtime family",
     ),
     "bnb-nf4": CompressionAlgorithm(
         key="bnb-nf4",

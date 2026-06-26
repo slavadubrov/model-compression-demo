@@ -74,7 +74,7 @@ lint: venv
 
 .PHONY: test
 test: venv
-	$(UV) run pytest
+	$(UV) run $(PYTHON) -m pytest
 
 .PHONY: smoke-html
 smoke-html: venv

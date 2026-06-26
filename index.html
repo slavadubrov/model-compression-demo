@@ -259,8 +259,8 @@
 <body>
   <header>
     <div class="hero">
-      <h1>Model Compression Selection Guide</h1>
-      <p>Choose a quantization algorithm, package, and GPU memory target for LLM deployment. The guide supports a blog article on compression and quantization approaches, with `llm-compressor` GPTQ as the production-oriented base path and practical alternatives for production, experiments, and edge deployment.</p>
+      <h1>LLM Serving Compression Guide</h1>
+      <p>Choose a quantization algorithm, package, and memory target for text LLM serving. The guide supports a blog article on compression and quantization approaches, with executable RTN, GPTQ, FP8, GGUF planning, and clear stubs for article topics that need specialized runtimes.</p>
     </div>
   </header>
 
@@ -269,7 +269,7 @@
       <h2>Default Recommendation</h2>
       <div class="callout">
         <strong>Start with `llm-compressor` unless your deployment target says otherwise.</strong>
-        It is the vLLM-project compression toolkit, emits compressed-tensors metadata, and covers GPTQ, AWQ, RTN, SmoothQuant, AutoRound, FP8, KV-cache quantization, and newer FP4 paths.
+        This repo executes the beginner-safe RTN, GPTQ, and dynamic FP8 LLM paths, then provides non-executable recipe stubs for AutoRound, NVFP4/MXFP4, and SVDQuant/Nunchaku so unsupported article topics are explicit.
       </div>
       <div class="decision">
         <div><span class="badge">Fit memory</span></div>
@@ -286,6 +286,10 @@
       <div class="decision">
         <div><span class="badge">Alternative</span></div>
         <p>Use GPTQModel when you want a current GPTQ/AWQ toolkit outside the `llm-compressor` workflow. Avoid starting new work on AutoAWQ or AutoGPTQ because their upstream repos now point users elsewhere.</p>
+      </div>
+      <div class="decision">
+        <div><span class="badge">Local</span></div>
+        <p>Use GGUF through llama.cpp, Ollama, or MLX-LM for CPU and Apple Silicon. The planner reports RAM or unified-memory targets for this path instead of server GPU recommendations.</p>
       </div>
     </section>
 
@@ -344,7 +348,7 @@
         <div class="metric"><span>Weights</span><strong id="weights">0 GiB</strong></div>
         <div class="metric"><span>KV cache</span><strong id="kv">0 GiB</strong></div>
         <div class="metric"><span>Total target</span><strong id="total">0 GiB</strong></div>
-        <div class="metric"><span>Smallest matching GPU</span><strong id="gpu">-</strong></div>
+        <div class="metric"><span>Smallest target</span><strong id="gpu">-</strong></div>
       </div>
       <p id="compat" class="warn"></p>
     </section>
@@ -396,6 +400,24 @@
             <td>vLLM, selected compressed checkpoints</td>
             <td>Long-context and high-concurrency serving where cache memory dominates.</td>
             <td>Can affect quality. Test retrieval and long-context tasks.</td>
+          </tr>
+          <tr>
+            <td>AutoRound W4A16</td>
+            <td>AutoRound, selected integrations</td>
+            <td>Learned rounding experiments against GPTQ/AWQ baselines.</td>
+            <td>Recipe stub only in this repo; use upstream tooling for execution.</td>
+          </tr>
+          <tr>
+            <td>NVFP4/MXFP4</td>
+            <td>NVIDIA ModelOpt, Blackwell-class runtimes</td>
+            <td>Newest hardware-specific low-precision experiments.</td>
+            <td>Recipe stub only unless your exact hardware and runtime support the format.</td>
+          </tr>
+          <tr>
+            <td>SVDQuant / Nunchaku</td>
+            <td>SVDQuant, Nunchaku</td>
+            <td>Image-model and diffusion compression outside text LLM serving.</td>
+            <td>Roadmap stub only; validate image quality in a separate workflow.</td>
           </tr>
           <tr>
             <td>bitsandbytes LLM.int8 / NF4</td>
@@ -596,6 +618,14 @@
       document.getElementById("total").textContent = gib(total);
       const gpuEl = document.getElementById("gpu");
       const compatEl = document.getElementById("compat");
+      if (scheme.label === "GGUF Q4") {
+        const ramTarget = Math.max(8, total * 1.2);
+        gpuEl.textContent = `${ramTarget.toFixed(1)} GiB RAM`;
+        gpuEl.className = "ok";
+        compatEl.textContent = "GGUF is a local CPU or Apple Silicon path. Use llama.cpp, Ollama, or MLX-LM rather than server GPU recommendations.";
+        compatEl.className = "ok";
+        return;
+      }
       if (candidates.length > 0) {
         const best = candidates[0];
         gpuEl.textContent = best.name;

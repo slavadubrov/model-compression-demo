@@ -37,12 +37,21 @@ class InstanceRecommendation:
 
 
 @dataclass(frozen=True)
+class LocalRuntimeRecommendation:
+    name: str
+    memory_target_gib: float
+    reason: str
+
+
+@dataclass(frozen=True)
 class CompressionPlan:
     algorithm_key: str
     scheme_key: str
     serving_memory: MemoryEstimate
     compression_memory: CompressionMemoryEstimate
     recommendations: tuple[InstanceRecommendation, ...]
+    local_recommendations: tuple[LocalRuntimeRecommendation, ...]
+    serving_target_label: str
     notes: tuple[str, ...]
 
 
@@ -139,6 +148,15 @@ def estimate_compression_memory(
     _validate_positive("layers", layers)
     algorithm = ALGORITHMS[algorithm_key]
     fp16_model_gib = params_b * 1_000_000_000 * 2 / BYTES_PER_GIB
+
+    if algorithm.scheme_key == "gguf-q4":
+        cpu_gib = fp16_model_gib * 1.20
+        notes = (
+            "GGUF conversion is a local runtime workflow. Plan for CPU RAM, disk, "
+            "and optional Apple unified memory; no CUDA compression GPU is required."
+        )
+        return CompressionMemoryEstimate(cpu_gib=cpu_gib, gpu_gib=0.0, notes=notes)
+
     cpu_gib = fp16_model_gib * 1.20
 
     layer_weight_gib = fp16_model_gib / layers
@@ -155,6 +173,32 @@ def estimate_compression_memory(
         "add hessian memory on GPU."
     )
     return CompressionMemoryEstimate(cpu_gib=cpu_gib, gpu_gib=gpu_gib, notes=notes)
+
+
+def recommend_local_runtimes(*, required_gib: float) -> tuple[LocalRuntimeRecommendation, ...]:
+    """Return local CPU and Apple runtime memory targets for GGUF-style deployment."""
+
+    _validate_positive("required_gib", required_gib)
+    cpu_target = max(8.0, required_gib * 1.20)
+    apple_target = max(16.0, required_gib * 1.25)
+    return (
+        LocalRuntimeRecommendation(
+            name="llama.cpp / Ollama on CPU",
+            memory_target_gib=cpu_target,
+            reason=(
+                f"Plan for about {cpu_target:.1f} GiB system RAM for Q4 GGUF weights, "
+                "KV cache, runtime overhead, and OS headroom."
+            ),
+        ),
+        LocalRuntimeRecommendation(
+            name="MLX-LM / Ollama on Apple Silicon",
+            memory_target_gib=apple_target,
+            reason=(
+                f"Plan for about {apple_target:.1f} GiB unified memory; leave extra headroom "
+                "for long context and other desktop workloads."
+            ),
+        ),
+    )
 
 
 def recommend_instances(
@@ -273,15 +317,28 @@ def build_plan(
         layers=layers,
         hidden_size=hidden_size,
     )
-    recommendations = recommend_instances(
-        required_gib=serving.total_gib,
-        min_compute_capability=scheme.min_compute_capability,
-    )
+    if algorithm.scheme_key == "gguf-q4":
+        recommendations = ()
+        local_recommendations = recommend_local_runtimes(required_gib=serving.total_gib)
+        serving_target_label = "RAM / unified memory target"
+        runtime_note = (
+            "Use llama.cpp, Ollama, or MLX-LM for local deployment instead of CUDA server GPUs."
+        )
+    else:
+        recommendations = recommend_instances(
+            required_gib=serving.total_gib,
+            min_compute_capability=scheme.min_compute_capability,
+        )
+        local_recommendations = ()
+        serving_target_label = "GPU memory target"
+        runtime_note = "Use a real serving load test on the target CUDA runtime before rollout."
+
     notes = (
         "Validate quality with task metrics and perplexity before production rollout.",
         "Treat KV cache as a first-class memory term for long context or concurrent serving.",
         "Use the compression estimate for the offline quantization job and the serving "
         "estimate for the deployed endpoint.",
+        runtime_note,
     )
     return CompressionPlan(
         algorithm_key=algorithm_key,
@@ -289,5 +346,7 @@ def build_plan(
         serving_memory=serving,
         compression_memory=compression,
         recommendations=recommendations,
+        local_recommendations=local_recommendations,
+        serving_target_label=serving_target_label,
         notes=notes,
     )
