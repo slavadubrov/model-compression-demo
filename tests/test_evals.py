@@ -37,7 +37,8 @@ def test_single_mode_quality_plan() -> None:
     assert plan.prompts == DEFAULT_PROMPTS
 
 
-def test_format_quality_eval_plan_lists_missing_install_command() -> None:
+def test_format_quality_eval_plan_lists_missing_install_command(monkeypatch) -> None:
+    monkeypatch.setattr("compression_demo.evals._module_available", lambda name: False)
     plan = build_quality_eval_plan(
         base_model="base",
         compressed_model="compressed",

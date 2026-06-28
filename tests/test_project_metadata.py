@@ -22,9 +22,10 @@ def test_runtime_stacks_are_documented_but_not_project_extras() -> None:
     data = load_pyproject()
 
     stacks = data["tool"]["model-compression-demo"]["runtime-stacks"]
-    assert "llmcompressor" in stacks["compression"]
-    assert "gptqmodel" in stacks["alternatives"]
-    assert "vllm" in stacks["serving"]
+    assert "llmcompressor==0.6.0.1" in stacks["compression"]
+    assert "bitsandbytes" in stacks["alternatives"]
+    assert "gptqmodel==7.1.0" in stacks["gptqmodel"]
+    assert "vllm==0.23.0" in stacks["serving"]
 
 
 def test_cli_scripts_are_declared() -> None:

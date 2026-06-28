@@ -416,14 +416,29 @@ def run_llmcompressor_quantization(
             "max_seq_length": max_seq_length,
             "num_calibration_samples": num_calibration_samples,
         }
-        if calibration_file:
-            from datasets import Dataset
+        from datasets import Dataset
 
+        if calibration_file:
             records = load_calibration_records(calibration_file, text_column=text_column)
-            oneshot_kwargs["dataset"] = Dataset.from_list(records)
         else:
-            oneshot_kwargs["dataset"] = dataset
-            oneshot_kwargs["dataset_config_name"] = dataset_config_name
+            from datasets import load_dataset
+
+            raw_records = load_dataset(
+                dataset,
+                dataset_config_name,
+                split=f"train[:{num_calibration_samples}]",
+            )
+            records = []
+            for row in raw_records:
+                text = str(row.get(text_column, "")).strip()
+                if text:
+                    records.append({text_column: text})
+            if not records:
+                raise ValueError(
+                    f"Dataset {dataset}/{dataset_config_name} did not provide text column "
+                    f"{text_column!r}"
+                )
+        oneshot_kwargs["dataset"] = Dataset.from_list(records)
         oneshot(**oneshot_kwargs)
         return
 

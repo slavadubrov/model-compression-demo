@@ -15,7 +15,8 @@ installed.
 
 - `demo.py`: CLI for algorithm listing, recipe generation, memory estimation,
   instance recommendations, size comparison, dry-run quantization, environment
-  checks, benchmark command planning, quality evaluation, and HTML smoke checks.
+  checks, benchmark command planning, local CUDA benchmark reporting, quality
+  evaluation, and HTML smoke checks.
 - `compression_demo/`: importable planner, algorithm catalog, quality evals,
   and recipe helpers.
 - `examples/`: focused code examples for `llm-compressor`, bitsandbytes,
@@ -40,6 +41,7 @@ uv run python demo.py quantize --dry-run
 uv run python demo.py quantize --calibration-file examples/representative_calibration.jsonl --dry-run
 uv run python demo.py serve-command --algorithm fp8-dynamic --fp8-kv-cache --enable-prefix-caching
 uv run python demo.py benchmark-plan --algorithms gptq-w4a16,awq-w4a16,bnb-nf4,gguf-q4
+uv run python demo.py gpu-benchmark --dry-run
 uv run python demo.py quality-eval --base-model Qwen/Qwen3-0.6B --compressed-model outputs/Qwen3-0.6B-W4A16 --dry-run
 uv run pytest
 ```
@@ -71,6 +73,7 @@ make check
 make clean
 make pipeline_dev
 make pipeline_article
+make gpu-benchmark
 ```
 
 Available recipes:
@@ -94,13 +97,19 @@ Available recipes:
 - `make quantize-dry-run`: show the `llm-compressor` quantization plan.
 - `make quality-eval-dry-run`: show the quality evaluation plan.
 - `make benchmark-plan`: generate vLLM benchmark commands and write JSON.
+- `make gpu-benchmark`: run local CUDA generation benchmarks and write JSON plus
+  `reports/gpu-benchmark-report.html` with SVG plots.
 - `make pipeline_dev`: format, lint, test, and smoke-check the project.
 - `make pipeline_article`: run the article-support dry-run pipeline commands.
 - `make pipeline_quality`: run quality-eval dry-run plus HTML smoke check.
-- `make install-compression`: install optional compression/eval packages.
-- `make install-alternatives`: install optional alternatives such as GPTQModel.
-- `make install-serving`: install `vllm`; use only on a supported CUDA/Linux
-  serving stack.
+- `make install-compression`: install the pinned llm-compressor-compatible
+  compression/eval packages in `.venv`.
+- `make install-alternatives`: install same-environment alternatives such as
+  bitsandbytes and PEFT.
+- `make install-serving`: install `vllm` into `SERVING_ENV` because current vLLM
+  and llm-compressor releases require incompatible dependency stacks.
+- `make install-gptqmodel`: install GPTQModel into `GPTQMODEL_ENV` for the same
+  dependency-isolation reason.
 
 Most recipes accept variables. Examples:
 
@@ -113,8 +122,34 @@ make quality-eval-dry-run \
 make benchmark-plan \
   BENCHMARK_MODEL=Qwen/Qwen2.5-32B-Instruct \
   BENCHMARK_ALGORITHMS=gptq-w4a16,awq-w4a16,bnb-nf4,gguf-q4
+make gpu-benchmark \
+  GPU_BENCHMARK_MODELS=Qwen/Qwen3-0.6B \
+  GPU_BENCHMARK_VARIANTS=bf16,bnb-int8,bnb-nf4 \
+  GPU_BENCHMARK_KERNELS=sdpa,eager
 make run_plan ARGS="--params-b 7 --goal throughput --hardware hopper"
 ```
+
+## Local GPU benchmark report
+
+The `gpu-benchmark` command runs small-model generation tests on the local CUDA
+runtime and writes both machine-readable JSON and a self-contained HTML report
+with SVG plots. It compares model variants such as BF16, bitsandbytes INT8, and
+bitsandbytes NF4 across attention kernel modes such as PyTorch SDPA and eager
+attention.
+
+```bash
+make install-compression
+uv run python demo.py gpu-benchmark \
+  --models Qwen/Qwen3-0.6B \
+  --variants bf16,bnb-int8,bnb-nf4 \
+  --kernels sdpa,eager \
+  --output-json reports/gpu-benchmark-results.json \
+  --report-html reports/gpu-benchmark-report.html
+```
+
+Use the generated report as a workstation smoke benchmark, not as a production
+serving benchmark. For endpoint throughput, still use `benchmark-plan` and run
+vLLM's serving benchmark against the exact deployed checkpoint and runtime.
 
 ## Full llm-compressor quantization path
 
@@ -122,21 +157,12 @@ Use this only in a CUDA-capable environment with enough disk, CPU memory, and GP
 memory:
 
 ```bash
-uv sync --group dev
-uv pip install \
-  accelerate \
-  compressed-tensors \
-  datasets \
-  llmcompressor \
-  lm_eval \
-  torch \
-  "transformers>=4.52.1"
+make install-compression
 
-# Optional alternatives covered in the guide.
-uv pip install bitsandbytes gptqmodel peft
-
-# Optional serving runtime. Install this only on a supported CUDA/Linux stack.
-uv pip install vllm
+# Current vLLM and GPTQModel releases use dependency stacks that conflict with
+# llm-compressor 0.6.0.1. Keep them isolated when you need those workflows:
+make install-serving SERVING_ENV=.venv-vllm
+make install-gptqmodel GPTQMODEL_ENV=.venv-gptqmodel
 
 uv run python demo.py quantize \
   --algorithm gptq-w4a16 \

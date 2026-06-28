@@ -19,6 +19,20 @@ dev = [
     "pytest>=8.0.0",
     "ruff>=0.12.0",
 ]
+compression = [
+    "accelerate",
+    "bitsandbytes",
+    "compressed-tensors==0.10.2",
+    "datasets",
+    "fsspec==2023.6.0",
+    "llmcompressor==0.6.0.1",
+    "lm_eval",
+    "numpy<2",
+    "peft",
+    "pyarrow<21",
+    "torch",
+    "transformers==4.52.4",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["compression_demo"]
@@ -41,18 +55,26 @@ testpaths = ["tests"]
 [tool.model-compression-demo.runtime-stacks]
 compression = [
     "accelerate",
-    "compressed-tensors",
+    "bitsandbytes",
+    "compressed-tensors==0.10.2",
     "datasets",
-    "llmcompressor",
+    "fsspec==2023.6.0",
+    "llmcompressor==0.6.0.1",
     "lm_eval",
+    "numpy<2",
+    "peft",
+    "pyarrow<21",
     "torch",
-    "transformers>=4.52.1",
+    "transformers==4.52.4",
 ]
 alternatives = [
     "bitsandbytes",
-    "gptqmodel",
     "peft",
 ]
+gptqmodel = [
+    "gptqmodel==7.1.0",
+    "torchvision",
+]
 serving = [
-    "vllm",
+    "vllm==0.23.0",
 ]

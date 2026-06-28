@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import importlib.util
 import json
 import pathlib
@@ -26,6 +27,17 @@ from .evals import (
     build_quality_eval_plan,
     format_quality_eval_plan,
     run_quality_eval,
+)
+from .gpu_benchmarks import (
+    DEFAULT_GPU_BENCHMARK_KERNELS,
+    DEFAULT_GPU_BENCHMARK_MODELS,
+    DEFAULT_GPU_BENCHMARK_PROMPTS,
+    DEFAULT_GPU_BENCHMARK_VARIANTS,
+    build_gpu_benchmark_plan,
+    format_gpu_benchmark_plan,
+    format_gpu_benchmark_summary,
+    parse_csv,
+    run_gpu_benchmarks,
 )
 from .model_specs import MODEL_PRESETS, architecture_from_hf_config, generic_architecture
 from .planner import build_plan, estimate_serving_memory, select_algorithm
@@ -80,6 +92,16 @@ def _format_bytes(nbytes: int) -> str:
 
 def _installed(name: str) -> bool:
     return importlib.util.find_spec(name) is not None
+
+
+def _module_status(name: str) -> str:
+    if not _installed(name):
+        return "missing"
+    try:
+        importlib.import_module(name)
+    except Exception as exc:  # pragma: no cover - depends on optional local stacks
+        return f"import-error: {type(exc).__name__}: {exc}"
+    return "importable"
 
 
 def _resolve_architecture(args: argparse.Namespace):
@@ -237,6 +259,35 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--max-model-len", type=int, default=4096)
     benchmark.add_argument("--port", type=int, default=8000)
     benchmark.add_argument("--output-json")
+
+    gpu_benchmark = subparsers.add_parser(
+        "gpu-benchmark",
+        help="Run local CUDA generation benchmarks and write an HTML report.",
+    )
+    gpu_benchmark.add_argument(
+        "--models",
+        default=",".join(DEFAULT_GPU_BENCHMARK_MODELS),
+        help="Comma-separated Hugging Face model ids or local model paths.",
+    )
+    gpu_benchmark.add_argument(
+        "--variants",
+        default=",".join(DEFAULT_GPU_BENCHMARK_VARIANTS),
+        help="Comma-separated variants: bf16, fp16, bnb-int8, bnb-nf4.",
+    )
+    gpu_benchmark.add_argument(
+        "--kernels",
+        default=",".join(DEFAULT_GPU_BENCHMARK_KERNELS),
+        help="Comma-separated kernels: eager, sdpa, sdpa-flash, sdpa-math, flash-attn-2.",
+    )
+    gpu_benchmark.add_argument("--prompt", action="append", default=[])
+    gpu_benchmark.add_argument("--max-new-tokens", type=int, default=64)
+    gpu_benchmark.add_argument("--warmup-runs", type=int, default=1)
+    gpu_benchmark.add_argument("--repeat-runs", type=int, default=3)
+    gpu_benchmark.add_argument("--output-json", default="reports/gpu-benchmark-results.json")
+    gpu_benchmark.add_argument("--report-html", default="reports/gpu-benchmark-report.html")
+    gpu_benchmark.add_argument("--trust-remote-code", action="store_true")
+    gpu_benchmark.add_argument("--fail-fast", action="store_true")
+    gpu_benchmark.add_argument("--dry-run", action="store_true")
 
     compare = subparsers.add_parser(
         "compare-size", help="Compare base and compressed model folder sizes."
@@ -464,6 +515,46 @@ def main(argv: list[str] | None = None) -> int:
         print(plan.to_json() if args.output_json else format_benchmark_plan(plan).rstrip())
         return 0
 
+    if args.command == "gpu-benchmark":
+        try:
+            models = parse_csv(args.models)
+            variants = parse_csv(args.variants)
+            kernels = parse_csv(args.kernels)
+            prompts = tuple(args.prompt) if args.prompt else DEFAULT_GPU_BENCHMARK_PROMPTS
+            plan = build_gpu_benchmark_plan(
+                models=models,
+                variants=variants,
+                kernels=kernels,
+                prompts=prompts,
+                max_new_tokens=args.max_new_tokens,
+                warmup_runs=args.warmup_runs,
+                repeat_runs=args.repeat_runs,
+                output_json=args.output_json,
+                report_html=args.report_html,
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
+
+        if args.dry_run:
+            print(format_gpu_benchmark_plan(plan))
+            return 0
+
+        payload = run_gpu_benchmarks(
+            models=models,
+            variants=variants,
+            kernels=kernels,
+            prompts=prompts,
+            max_new_tokens=args.max_new_tokens,
+            warmup_runs=args.warmup_runs,
+            repeat_runs=args.repeat_runs,
+            output_json=args.output_json,
+            report_html=args.report_html,
+            trust_remote_code=args.trust_remote_code,
+            fail_fast=args.fail_fast,
+        )
+        print(format_gpu_benchmark_summary(payload))
+        return 0
+
     if args.command == "compare-size":
         base = _folder_size(pathlib.Path(args.base_dir))
         compressed = _folder_size(pathlib.Path(args.compressed_dir))
@@ -522,7 +613,7 @@ def main(argv: list[str] | None = None) -> int:
             "gptqmodel",
         ]
         for module in modules:
-            print(f"{module:20} {'installed' if _installed(module) else 'missing'}")
+            print(f"{module:20} {_module_status(module)}")
         print("\nKnown GPU classes:")
         for gpu in GPU_INSTANCES:
             print(f"{gpu.name:22} {gpu.memory_gib:6.1f} GiB  cc {gpu.compute_capability:>4}")

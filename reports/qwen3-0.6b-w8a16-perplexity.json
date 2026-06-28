@@ -1,0 +1,41 @@
+{
+  "perplexity": {
+    "base_perplexity": 37.16064789393289,
+    "compressed_perplexity": 37.905358862119066,
+    "delta": 0.7447109681861761,
+    "relative_delta_pct": 2.004031173815357
+  },
+  "plan": {
+    "base_model": "Qwen/Qwen3-0.6B",
+    "checks": [
+      "perplexity comparison"
+    ],
+    "compressed_model": "outputs/Qwen3-0.6B-W8A16-smoke",
+    "dataset": "wikitext",
+    "dataset_config_name": "wikitext-2-raw-v1",
+    "dataset_split": "test",
+    "lm_eval_limit": 50,
+    "lm_eval_task": null,
+    "long_context_tokens": 4096,
+    "max_perplexity_delta_pct": 5.0,
+    "max_task_regression": 0.02,
+    "mode": "perplexity",
+    "output_json": "reports/qwen3-0.6b-w8a16-perplexity.json",
+    "prompts": [
+      "Machine learning is a branch of",
+      "Explain model quantization to an infrastructure engineer in two sentences.",
+      "Summarize why KV cache memory matters for long-context LLM serving."
+    ],
+    "require_long_context_anchor": true,
+    "required_modules": [
+      "datasets",
+      "torch",
+      "transformers"
+    ]
+  },
+  "summary": {
+    "failures": [],
+    "verdict": "pass",
+    "warnings": []
+  }
+}
