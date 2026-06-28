@@ -5,6 +5,8 @@ import json
 import pathlib
 from contextlib import redirect_stdout
 
+import pytest
+
 from compression_demo.cli import main
 
 
@@ -14,6 +16,12 @@ def run_cli(*args: str) -> str:
         code = main(list(args))
     assert code == 0
     return buf.getvalue()
+
+
+def assert_cli_usage_error(*args: str) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main(list(args))
+    assert exc_info.value.code == 2
 
 
 def test_recipe_contains_llmcompressor_gptq() -> None:
@@ -184,3 +192,20 @@ def test_html_smoke() -> None:
     guide = pathlib.Path(__file__).resolve().parents[1] / "index.html"
     out = run_cli("smoke-html", "--path", str(guide))
     assert "HTML guide OK" in out
+
+
+def test_quality_eval_rejects_invalid_runtime_numbers() -> None:
+    assert_cli_usage_error(
+        "quality-eval",
+        "--base-model",
+        "base",
+        "--compressed-model",
+        "compressed",
+        "--stride",
+        "0",
+        "--dry-run",
+    )
+
+
+def test_gpu_benchmark_rejects_invalid_repeat_runs() -> None:
+    assert_cli_usage_error("gpu-benchmark", "--repeat-runs", "0", "--dry-run")

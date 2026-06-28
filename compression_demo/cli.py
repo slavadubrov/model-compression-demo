@@ -6,9 +6,10 @@ import argparse
 import importlib
 import importlib.util
 import json
-import pathlib
 import sys
+from collections.abc import Callable
 from html.parser import HTMLParser
+from pathlib import Path
 
 from .benchmarks import (
     build_benchmark_plan,
@@ -27,6 +28,7 @@ from .evals import (
     build_quality_eval_plan,
     format_quality_eval_plan,
     run_quality_eval,
+    validate_quality_runtime_args,
 )
 from .gpu_benchmarks import (
     DEFAULT_GPU_BENCHMARK_KERNELS,
@@ -39,7 +41,12 @@ from .gpu_benchmarks import (
     parse_csv,
     run_gpu_benchmarks,
 )
-from .model_specs import MODEL_PRESETS, architecture_from_hf_config, generic_architecture
+from .model_specs import (
+    MODEL_PRESETS,
+    ModelArchitecture,
+    architecture_from_hf_config,
+    generic_architecture,
+)
 from .planner import build_plan, estimate_serving_memory, select_algorithm
 from .recipes import (
     EXECUTABLE_QUANTIZATION_ALGORITHMS,
@@ -49,6 +56,8 @@ from .recipes import (
     recipe_snippet,
     run_llmcompressor_quantization,
 )
+
+CommandHandler = Callable[[argparse.Namespace, argparse.ArgumentParser], int]
 
 
 def _gib(value: float) -> str:
@@ -74,7 +83,7 @@ def _print_scheme_table() -> None:
         )
 
 
-def _folder_size(path: pathlib.Path) -> int:
+def _folder_size(path: Path) -> int:
     if not path.exists():
         raise FileNotFoundError(path)
     if path.is_file():
@@ -104,7 +113,7 @@ def _module_status(name: str) -> str:
     return "importable"
 
 
-def _resolve_architecture(args: argparse.Namespace):
+def _resolve_architecture(args: argparse.Namespace) -> ModelArchitecture:
     if getattr(args, "hf_config", None):
         return architecture_from_hf_config(args.hf_config)
     preset = getattr(args, "model_preset", None)
@@ -117,7 +126,7 @@ def _resolve_architecture(args: argparse.Namespace):
     )
 
 
-def _resolve_params_b(args: argparse.Namespace, architecture) -> float:
+def _resolve_params_b(args: argparse.Namespace, architecture: ModelArchitecture) -> float:
     if args.params_b is not None:
         return args.params_b
     if architecture.params_b is not None:
@@ -125,7 +134,7 @@ def _resolve_params_b(args: argparse.Namespace, architecture) -> float:
     raise ValueError("Pass --params-b or choose a --model-preset with a parameter count.")
 
 
-def _print_architecture_notes(architecture) -> None:
+def _print_architecture_notes(architecture: ModelArchitecture) -> None:
     print(f"Architecture:     {architecture.name} ({architecture.source})")
     print(
         "Layers/hidden/KV: "
@@ -154,7 +163,7 @@ class _HTMLSmokeParser(HTMLParser):
             self.scripts += 1
 
 
-def _smoke_html(path: pathlib.Path) -> None:
+def _smoke_html(path: Path) -> None:
     parser = _HTMLSmokeParser()
     parser.feed(path.read_text(encoding="utf-8"))
     missing = []
@@ -344,202 +353,195 @@ def build_parser() -> argparse.ArgumentParser:
     smoke = subparsers.add_parser(
         "smoke-html", help="Validate that the HTML guide has the expected structure."
     )
-    smoke.add_argument("--path", default=str(pathlib.Path(__file__).parents[1] / "index.html"))
+    smoke.add_argument("--path", default=str(Path(__file__).parents[1] / "index.html"))
 
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
+def _run_list_algorithms(_args: argparse.Namespace, _parser: argparse.ArgumentParser) -> int:
+    _print_algorithm_table()
+    return 0
 
-    if args.command == "list-algorithms":
-        _print_algorithm_table()
-        return 0
 
-    if args.command == "list-schemes":
-        _print_scheme_table()
-        return 0
+def _run_list_schemes(_args: argparse.Namespace, _parser: argparse.ArgumentParser) -> int:
+    _print_scheme_table()
+    return 0
 
-    if args.command == "estimate":
-        architecture = _resolve_architecture(args)
-        try:
-            params_b = _resolve_params_b(args, architecture)
-        except ValueError as exc:
-            parser.error(str(exc))
-        estimate = estimate_serving_memory(
-            params_b=params_b,
-            scheme_key=args.scheme,
-            layers=architecture.layers,
-            hidden_size=architecture.hidden_size,
-            context_tokens=args.context,
-            concurrency=args.concurrency,
-            kv_cache_bits=args.kv_cache_bits,
-            kv_head_ratio=architecture.kv_head_ratio,
-        )
-        if args.json:
-            print(json.dumps(estimate.__dict__, indent=2, sort_keys=True))
-        else:
-            _print_architecture_notes(architecture)
-            print(f"Scheme:           {args.scheme}")
-            print(f"Weights:          {_gib(estimate.weight_gib)}")
-            print(f"KV cache:         {_gib(estimate.kv_cache_gib)}")
-            print(f"Runtime overhead: {_gib(estimate.runtime_overhead_gib)}")
-            print(f"Safety buffer:    {_gib(estimate.safety_buffer_gib)}")
-            print(f"Total target:     {_gib(estimate.total_gib)}")
-        return 0
 
-    if args.command == "plan":
-        architecture = _resolve_architecture(args)
-        try:
-            params_b = _resolve_params_b(args, architecture)
-        except ValueError as exc:
-            parser.error(str(exc))
-        algorithm_key = args.algorithm or select_algorithm(
-            goal=args.goal,
-            hardware=args.hardware,
-            deployment=args.deployment,
-        )
-        plan = build_plan(
-            params_b=params_b,
-            algorithm_key=algorithm_key,
-            layers=architecture.layers,
-            hidden_size=architecture.hidden_size,
-            context_tokens=args.context,
-            concurrency=args.concurrency,
-            kv_cache_bits=args.kv_cache_bits,
-            kv_head_ratio=architecture.kv_head_ratio,
-        )
-        algorithm = ALGORITHMS[algorithm_key]
-        scheme = SCHEMES[plan.scheme_key]
+def _run_estimate(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    architecture = _resolve_architecture(args)
+    try:
+        params_b = _resolve_params_b(args, architecture)
+    except ValueError as exc:
+        parser.error(str(exc))
+        return 2
+
+    estimate = estimate_serving_memory(
+        params_b=params_b,
+        scheme_key=args.scheme,
+        layers=architecture.layers,
+        hidden_size=architecture.hidden_size,
+        context_tokens=args.context,
+        concurrency=args.concurrency,
+        kv_cache_bits=args.kv_cache_bits,
+        kv_head_ratio=architecture.kv_head_ratio,
+    )
+    if args.json:
+        print(json.dumps(estimate.__dict__, indent=2, sort_keys=True))
+    else:
         _print_architecture_notes(architecture)
-        print(f"Algorithm:         {algorithm.name}")
-        print(f"Scheme:            {scheme.label}")
-        print(f"Package:           {algorithm.package}")
-        print(f"{plan.serving_target_label}: {_gib(plan.serving_memory.total_gib)}")
-        print(f"Compression CPU:   {_gib(plan.compression_memory.cpu_gib)}")
-        if plan.compression_memory.gpu_gib > 0:
-            print(f"Compression GPU:   {_gib(plan.compression_memory.gpu_gib)}")
-        else:
-            print("Compression GPU:   not required for this local conversion path")
-        if plan.local_recommendations:
-            print("Recommended local runtimes:")
-            for rec in plan.local_recommendations:
-                print(f"  - {rec.name}: {_gib(rec.memory_target_gib)}; {rec.reason}")
-        else:
-            print("Recommended GPUs:")
-            for rec in plan.recommendations:
-                marker = "fits" if rec.fits else "needs sharding"
-                print(f"  - {rec.instance.name}: {marker}; {rec.reason}")
-        print("Notes:")
-        for note in plan.notes:
-            print(f"  - {note}")
-        return 0
+        print(f"Scheme:           {args.scheme}")
+        print(f"Weights:          {_gib(estimate.weight_gib)}")
+        print(f"KV cache:         {_gib(estimate.kv_cache_gib)}")
+        print(f"Runtime overhead: {_gib(estimate.runtime_overhead_gib)}")
+        print(f"Safety buffer:    {_gib(estimate.safety_buffer_gib)}")
+        print(f"Total target:     {_gib(estimate.total_gib)}")
+    return 0
 
-    if args.command == "recipe":
-        print(recipe_snippet(args.algorithm), end="")
-        return 0
 
-    if args.command == "quantize":
-        output_dir = args.output_dir or default_output_dir(
-            model=args.model,
-            algorithm_key=args.algorithm,
-        )
-        if args.dry_run:
-            print(
-                dry_run_quantization_command(
-                    algorithm_key=args.algorithm,
-                    model=args.model,
-                    output_dir=output_dir,
-                    dataset=args.dataset,
-                    dataset_config_name=args.dataset_config_name,
-                    calibration_file=args.calibration_file,
-                    text_column=args.text_column,
-                    num_calibration_samples=args.num_calibration_samples,
-                    max_seq_length=args.max_seq_length,
-                )
-            )
-            return 0
-        run_llmcompressor_quantization(
-            algorithm_key=args.algorithm,
-            model=args.model,
-            output_dir=output_dir,
-            dataset=args.dataset,
-            dataset_config_name=args.dataset_config_name,
-            calibration_file=args.calibration_file,
-            text_column=args.text_column,
-            num_calibration_samples=args.num_calibration_samples,
-            max_seq_length=args.max_seq_length,
-        )
-        return 0
+def _run_plan(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    architecture = _resolve_architecture(args)
+    try:
+        params_b = _resolve_params_b(args, architecture)
+    except ValueError as exc:
+        parser.error(str(exc))
+        return 2
 
-    if args.command == "serve-command":
-        model_path = args.model_path or default_output_dir(
-            model="Qwen/Qwen3-0.6B",
-            algorithm_key=args.algorithm,
-        )
-        max_model_len = args.max_model_len
-        if max_model_len is None:
-            max_model_len = 32768 if args.algorithm in {"fp8-dynamic", "kv-cache-fp8"} else 4096
+    algorithm_key = args.algorithm or select_algorithm(
+        goal=args.goal,
+        hardware=args.hardware,
+        deployment=args.deployment,
+    )
+    plan = build_plan(
+        params_b=params_b,
+        algorithm_key=algorithm_key,
+        layers=architecture.layers,
+        hidden_size=architecture.hidden_size,
+        context_tokens=args.context,
+        concurrency=args.concurrency,
+        kv_cache_bits=args.kv_cache_bits,
+        kv_head_ratio=architecture.kv_head_ratio,
+    )
+    algorithm = ALGORITHMS[algorithm_key]
+    scheme = SCHEMES[plan.scheme_key]
+    _print_architecture_notes(architecture)
+    print(f"Algorithm:         {algorithm.name}")
+    print(f"Scheme:            {scheme.label}")
+    print(f"Package:           {algorithm.package}")
+    print(f"{plan.serving_target_label}: {_gib(plan.serving_memory.total_gib)}")
+    print(f"Compression CPU:   {_gib(plan.compression_memory.cpu_gib)}")
+    if plan.compression_memory.gpu_gib > 0:
+        print(f"Compression GPU:   {_gib(plan.compression_memory.gpu_gib)}")
+    else:
+        print("Compression GPU:   not required for this local conversion path")
+    if plan.local_recommendations:
+        print("Recommended local runtimes:")
+        for rec in plan.local_recommendations:
+            print(f"  - {rec.name}: {_gib(rec.memory_target_gib)}; {rec.reason}")
+    else:
+        print("Recommended GPUs:")
+        for rec in plan.recommendations:
+            marker = "fits" if rec.fits else "needs sharding"
+            print(f"  - {rec.instance.name}: {marker}; {rec.reason}")
+    print("Notes:")
+    for note in plan.notes:
+        print(f"  - {note}")
+    return 0
+
+
+def _run_recipe(args: argparse.Namespace, _parser: argparse.ArgumentParser) -> int:
+    print(recipe_snippet(args.algorithm), end="")
+    return 0
+
+
+def _run_quantize(args: argparse.Namespace, _parser: argparse.ArgumentParser) -> int:
+    output_dir = args.output_dir or default_output_dir(
+        model=args.model,
+        algorithm_key=args.algorithm,
+    )
+    if args.dry_run:
         print(
-            build_vllm_serve_command(
+            dry_run_quantization_command(
                 algorithm_key=args.algorithm,
-                model_path=model_path,
-                max_model_len=max_model_len,
-                tensor_parallel_size=args.tensor_parallel_size,
-                port=args.port,
-                fp8_kv_cache=args.fp8_kv_cache,
-                enable_prefix_caching=args.enable_prefix_caching,
+                model=args.model,
+                output_dir=output_dir,
+                dataset=args.dataset,
+                dataset_config_name=args.dataset_config_name,
+                calibration_file=args.calibration_file,
+                text_column=args.text_column,
+                num_calibration_samples=args.num_calibration_samples,
+                max_seq_length=args.max_seq_length,
             )
         )
-        print("# Check your installed vLLM version because FP8 flag names can vary.")
         return 0
 
-    if args.command == "benchmark-plan":
-        try:
-            algorithm_keys = parse_algorithm_list(args.algorithms)
-        except ValueError as exc:
-            parser.error(str(exc))
-        plan = build_benchmark_plan(
-            model=args.model,
-            algorithm_keys=algorithm_keys,
-            dataset_name=args.dataset_name,
-            num_prompts=args.num_prompts,
-            input_len=args.input_len,
-            output_len=args.output_len,
-            max_model_len=args.max_model_len,
+    run_llmcompressor_quantization(
+        algorithm_key=args.algorithm,
+        model=args.model,
+        output_dir=output_dir,
+        dataset=args.dataset,
+        dataset_config_name=args.dataset_config_name,
+        calibration_file=args.calibration_file,
+        text_column=args.text_column,
+        num_calibration_samples=args.num_calibration_samples,
+        max_seq_length=args.max_seq_length,
+    )
+    return 0
+
+
+def _run_serve_command(args: argparse.Namespace, _parser: argparse.ArgumentParser) -> int:
+    model_path = args.model_path or default_output_dir(
+        model="Qwen/Qwen3-0.6B",
+        algorithm_key=args.algorithm,
+    )
+    max_model_len = args.max_model_len
+    if max_model_len is None:
+        max_model_len = 32768 if args.algorithm in {"fp8-dynamic", "kv-cache-fp8"} else 4096
+    print(
+        build_vllm_serve_command(
+            algorithm_key=args.algorithm,
+            model_path=model_path,
+            max_model_len=max_model_len,
+            tensor_parallel_size=args.tensor_parallel_size,
             port=args.port,
+            fp8_kv_cache=args.fp8_kv_cache,
+            enable_prefix_caching=args.enable_prefix_caching,
         )
-        if args.output_json:
-            write_benchmark_plan_json(plan, args.output_json)
-        print(plan.to_json() if args.output_json else format_benchmark_plan(plan).rstrip())
-        return 0
+    )
+    print("# Check your installed vLLM version because FP8 flag names can vary.")
+    return 0
 
-    if args.command == "gpu-benchmark":
-        try:
-            models = parse_csv(args.models)
-            variants = parse_csv(args.variants)
-            kernels = parse_csv(args.kernels)
-            prompts = tuple(args.prompt) if args.prompt else DEFAULT_GPU_BENCHMARK_PROMPTS
-            plan = build_gpu_benchmark_plan(
-                models=models,
-                variants=variants,
-                kernels=kernels,
-                prompts=prompts,
-                max_new_tokens=args.max_new_tokens,
-                warmup_runs=args.warmup_runs,
-                repeat_runs=args.repeat_runs,
-                output_json=args.output_json,
-                report_html=args.report_html,
-            )
-        except ValueError as exc:
-            parser.error(str(exc))
 
-        if args.dry_run:
-            print(format_gpu_benchmark_plan(plan))
-            return 0
+def _run_benchmark_plan(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    try:
+        algorithm_keys = parse_algorithm_list(args.algorithms)
+    except ValueError as exc:
+        parser.error(str(exc))
+        return 2
 
-        payload = run_gpu_benchmarks(
+    plan = build_benchmark_plan(
+        model=args.model,
+        algorithm_keys=algorithm_keys,
+        dataset_name=args.dataset_name,
+        num_prompts=args.num_prompts,
+        input_len=args.input_len,
+        output_len=args.output_len,
+        max_model_len=args.max_model_len,
+        port=args.port,
+    )
+    if args.output_json:
+        write_benchmark_plan_json(plan, args.output_json)
+    print(plan.to_json() if args.output_json else format_benchmark_plan(plan).rstrip())
+    return 0
+
+
+def _run_gpu_benchmark(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    try:
+        models = parse_csv(args.models)
+        variants = parse_csv(args.variants)
+        kernels = parse_csv(args.kernels)
+        prompts = tuple(args.prompt) if args.prompt else DEFAULT_GPU_BENCHMARK_PROMPTS
+        plan = build_gpu_benchmark_plan(
             models=models,
             variants=variants,
             kernels=kernels,
@@ -549,23 +551,50 @@ def main(argv: list[str] | None = None) -> int:
             repeat_runs=args.repeat_runs,
             output_json=args.output_json,
             report_html=args.report_html,
-            trust_remote_code=args.trust_remote_code,
-            fail_fast=args.fail_fast,
         )
-        print(format_gpu_benchmark_summary(payload))
+    except ValueError as exc:
+        parser.error(str(exc))
+        return 2
+
+    if args.dry_run:
+        print(format_gpu_benchmark_plan(plan))
         return 0
 
-    if args.command == "compare-size":
-        base = _folder_size(pathlib.Path(args.base_dir))
-        compressed = _folder_size(pathlib.Path(args.compressed_dir))
-        reduction = 0.0 if base == 0 else (1 - compressed / base) * 100
-        print(f"Base:       {_format_bytes(base)}")
-        print(f"Compressed: {_format_bytes(compressed)}")
-        print(f"Reduction:  {reduction:.1f}%")
-        return 0
+    payload = run_gpu_benchmarks(
+        models=models,
+        variants=variants,
+        kernels=kernels,
+        prompts=prompts,
+        max_new_tokens=args.max_new_tokens,
+        warmup_runs=args.warmup_runs,
+        repeat_runs=args.repeat_runs,
+        output_json=args.output_json,
+        report_html=args.report_html,
+        trust_remote_code=args.trust_remote_code,
+        fail_fast=args.fail_fast,
+    )
+    print(format_gpu_benchmark_summary(payload))
+    return 0
 
-    if args.command == "quality-eval":
-        prompts = tuple(args.prompt) if args.prompt else DEFAULT_PROMPTS
+
+def _run_compare_size(args: argparse.Namespace, _parser: argparse.ArgumentParser) -> int:
+    base = _folder_size(Path(args.base_dir))
+    compressed = _folder_size(Path(args.compressed_dir))
+    reduction = 0.0 if base == 0 else (1 - compressed / base) * 100
+    print(f"Base:       {_format_bytes(base)}")
+    print(f"Compressed: {_format_bytes(compressed)}")
+    print(f"Reduction:  {reduction:.1f}%")
+    return 0
+
+
+def _run_quality_eval(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    prompts = tuple(args.prompt) if args.prompt else DEFAULT_PROMPTS
+    try:
+        validate_quality_runtime_args(
+            max_new_tokens=args.max_new_tokens,
+            max_tokens=args.max_tokens,
+            stride=args.stride,
+        )
         plan = build_quality_eval_plan(
             base_model=args.base_model,
             compressed_model=args.compressed_model,
@@ -582,49 +611,79 @@ def main(argv: list[str] | None = None) -> int:
             require_long_context_anchor=args.require_long_context_anchor,
             output_json=args.output_json,
         )
-        if args.dry_run:
-            print(format_quality_eval_plan(plan))
-            return 0
-        try:
-            results = run_quality_eval(
-                plan=plan,
-                max_new_tokens=args.max_new_tokens,
-                max_tokens=args.max_tokens,
-                stride=args.stride,
-                lm_eval_limit=args.lm_eval_limit,
-                sequential_models=args.eval_loading == "sequential",
-            )
-        except QualityGateError as exc:
-            print(json.dumps(exc.results, indent=2, sort_keys=True))
-            return 2
-        else:
-            print(json.dumps(results, indent=2, sort_keys=True))
-            return 0
-
-    if args.command == "env":
-        modules = [
-            "torch",
-            "transformers",
-            "datasets",
-            "llmcompressor",
-            "compressed_tensors",
-            "vllm",
-            "bitsandbytes",
-            "gptqmodel",
-        ]
-        for module in modules:
-            print(f"{module:20} {_module_status(module)}")
-        print("\nKnown GPU classes:")
-        for gpu in GPU_INSTANCES:
-            print(f"{gpu.name:22} {gpu.memory_gib:6.1f} GiB  cc {gpu.compute_capability:>4}")
+    except ValueError as exc:
+        parser.error(str(exc))
+        return 2
+    if args.dry_run:
+        print(format_quality_eval_plan(plan))
         return 0
 
-    if args.command == "smoke-html":
-        _smoke_html(pathlib.Path(args.path))
-        print(f"HTML guide OK: {args.path}")
-        return 0
+    try:
+        results = run_quality_eval(
+            plan=plan,
+            max_new_tokens=args.max_new_tokens,
+            max_tokens=args.max_tokens,
+            stride=args.stride,
+            lm_eval_limit=args.lm_eval_limit,
+            sequential_models=args.eval_loading == "sequential",
+        )
+    except QualityGateError as exc:
+        print(json.dumps(exc.results, indent=2, sort_keys=True))
+        return 2
 
-    return 1
+    print(json.dumps(results, indent=2, sort_keys=True))
+    return 0
+
+
+def _run_env(_args: argparse.Namespace, _parser: argparse.ArgumentParser) -> int:
+    modules = [
+        "torch",
+        "transformers",
+        "datasets",
+        "llmcompressor",
+        "compressed_tensors",
+        "vllm",
+        "bitsandbytes",
+        "gptqmodel",
+    ]
+    for module in modules:
+        print(f"{module:20} {_module_status(module)}")
+    print("\nKnown GPU classes:")
+    for gpu in GPU_INSTANCES:
+        print(f"{gpu.name:22} {gpu.memory_gib:6.1f} GiB  cc {gpu.compute_capability:>4}")
+    return 0
+
+
+def _run_smoke_html(args: argparse.Namespace, _parser: argparse.ArgumentParser) -> int:
+    _smoke_html(Path(args.path))
+    print(f"HTML guide OK: {args.path}")
+    return 0
+
+
+COMMAND_HANDLERS: dict[str, CommandHandler] = {
+    "benchmark-plan": _run_benchmark_plan,
+    "compare-size": _run_compare_size,
+    "env": _run_env,
+    "estimate": _run_estimate,
+    "gpu-benchmark": _run_gpu_benchmark,
+    "list-algorithms": _run_list_algorithms,
+    "list-schemes": _run_list_schemes,
+    "plan": _run_plan,
+    "quality-eval": _run_quality_eval,
+    "quantize": _run_quantize,
+    "recipe": _run_recipe,
+    "serve-command": _run_serve_command,
+    "smoke-html": _run_smoke_html,
+}
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    handler = COMMAND_HANDLERS.get(args.command)
+    if handler is None:
+        return 1
+    return handler(args, parser)
 
 
 if __name__ == "__main__":

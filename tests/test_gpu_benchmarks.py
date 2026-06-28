@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from compression_demo.gpu_benchmarks import (
     GPUBenchmarkRun,
     build_gpu_benchmark_plan,
     format_gpu_benchmark_plan,
     summarize_gpu_benchmark_results,
+    validate_gpu_benchmark_numbers,
     write_gpu_benchmark_report,
 )
 
@@ -155,3 +158,8 @@ def test_cli_gpu_benchmark_can_be_monkeypatched(tmp_path, monkeypatch) -> None:
     assert code == 0
     assert output_json.exists()
     assert report_html.exists()
+
+
+def test_gpu_benchmark_numbers_must_be_positive() -> None:
+    with pytest.raises(ValueError, match="repeat_runs must be a positive integer"):
+        validate_gpu_benchmark_numbers(max_new_tokens=8, warmup_runs=1, repeat_runs=0)

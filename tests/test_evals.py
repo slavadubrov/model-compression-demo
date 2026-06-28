@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import pytest
+
 from compression_demo.evals import (
     DEFAULT_PROMPTS,
     build_lm_eval_command,
     build_quality_eval_plan,
     format_quality_eval_plan,
     summarize_quality_results,
+    validate_quality_runtime_args,
 )
 
 
@@ -116,3 +119,17 @@ def test_quality_summary_passes_when_gates_hold() -> None:
     )
 
     assert summary == {"verdict": "pass", "failures": [], "warnings": []}
+
+
+def test_quality_plan_rejects_unknown_mode() -> None:
+    with pytest.raises(ValueError, match="mode must be one of"):
+        build_quality_eval_plan(
+            base_model="base",
+            compressed_model="compressed",
+            mode="surprise",
+        )
+
+
+def test_quality_runtime_args_must_be_positive() -> None:
+    with pytest.raises(ValueError, match="stride must be a positive integer"):
+        validate_quality_runtime_args(max_new_tokens=8, max_tokens=128, stride=0)

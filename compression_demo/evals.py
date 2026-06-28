@@ -28,6 +28,7 @@ DEFAULT_LM_EVAL_TASK = "hellaswag"
 DEFAULT_LM_EVAL_LIMIT = 50
 DEFAULT_MAX_PERPLEXITY_DELTA_PCT = 5.0
 DEFAULT_MAX_TASK_REGRESSION = 0.02
+QUALITY_EVAL_MODES = frozenset({"all", "generation", "perplexity", "long-context", "lm-eval"})
 
 
 class QualityGateError(RuntimeError):
@@ -82,6 +83,29 @@ def _module_available(name: str) -> bool:
     return importlib.util.find_spec(name) is not None
 
 
+def _validate_positive_int(name: str, value: int) -> None:
+    if value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+
+
+def _validate_non_negative_int(name: str, value: int) -> None:
+    if value < 0:
+        raise ValueError(f"{name} must be zero or greater")
+
+
+def _validate_non_negative_float(name: str, value: float) -> None:
+    if value < 0:
+        raise ValueError(f"{name} must be zero or greater")
+
+
+def validate_quality_runtime_args(*, max_new_tokens: int, max_tokens: int, stride: int) -> None:
+    """Validate runtime-only quality evaluation numeric settings."""
+
+    _validate_positive_int("max_new_tokens", max_new_tokens)
+    _validate_positive_int("max_tokens", max_tokens)
+    _validate_positive_int("stride", stride)
+
+
 def _checks_for_mode(
     mode: str, lm_eval_task: str | None, long_context_tokens: int
 ) -> tuple[str, ...]:
@@ -128,6 +152,17 @@ def build_quality_eval_plan(
     require_long_context_anchor: bool = True,
     output_json: str | None = None,
 ) -> QualityEvalPlan:
+    if mode not in QUALITY_EVAL_MODES:
+        expected = ", ".join(sorted(QUALITY_EVAL_MODES))
+        raise ValueError(f"mode must be one of: {expected}")
+    _validate_non_negative_int("long_context_tokens", long_context_tokens)
+    if lm_eval_limit is not None:
+        _validate_positive_int("lm_eval_limit", lm_eval_limit)
+    if max_perplexity_delta_pct is not None:
+        _validate_non_negative_float("max_perplexity_delta_pct", max_perplexity_delta_pct)
+    if max_task_regression is not None:
+        _validate_non_negative_float("max_task_regression", max_task_regression)
+
     if mode in {"all", "lm-eval"} and lm_eval_task is None:
         lm_eval_task = DEFAULT_LM_EVAL_TASK
     checks = _checks_for_mode(mode, lm_eval_task, long_context_tokens)
@@ -298,6 +333,8 @@ def calculate_perplexity(
     max_tokens: int,
     stride: int,
 ) -> float:
+    _validate_positive_int("max_tokens", max_tokens)
+    _validate_positive_int("stride", stride)
     _require_modules("torch")
     import math
 
@@ -566,6 +603,11 @@ def run_quality_eval(
     lm_eval_limit: int | None = None,
     sequential_models: bool = True,
 ) -> dict[str, Any]:
+    validate_quality_runtime_args(
+        max_new_tokens=max_new_tokens,
+        max_tokens=max_tokens,
+        stride=stride,
+    )
     results: dict[str, Any] = {"plan": plan.to_dict()}
     output_json = plan.output_json
 

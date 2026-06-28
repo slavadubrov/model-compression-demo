@@ -29,6 +29,8 @@ installed.
 
 ## Quick start
 
+Architecture notes and code diagrams live in [`docs/architecture.md`](docs/architecture.md). Checked-in report fixture provenance is documented in [`docs/reports.md`](docs/reports.md).
+
 From this directory:
 
 ```bash
@@ -199,11 +201,8 @@ from datasets import Dataset
 from llmcompressor import oneshot
 from llmcompressor.modifiers.quantization import GPTQModifier
 
-rows = [
-    json.loads(line)
-    for line in open("examples/representative_calibration.jsonl", encoding="utf-8")
-    if line.strip()
-]
+with open("examples/representative_calibration.jsonl", encoding="utf-8") as handle:
+    rows = [json.loads(line) for line in handle if line.strip()]
 
 recipe = GPTQModifier(
     scheme="W4A16",

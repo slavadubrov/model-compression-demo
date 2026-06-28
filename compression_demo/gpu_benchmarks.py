@@ -97,6 +97,24 @@ def validate_gpu_benchmark_axes(
         raise ValueError(f"Unknown GPU benchmark kernel(s): {', '.join(unknown_kernels)}")
 
 
+def _validate_positive_int(name: str, value: int) -> None:
+    if value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+
+
+def validate_gpu_benchmark_numbers(
+    *,
+    max_new_tokens: int,
+    warmup_runs: int,
+    repeat_runs: int,
+) -> None:
+    """Validate benchmark loop counts before a GPU run starts."""
+
+    _validate_positive_int("max_new_tokens", max_new_tokens)
+    _validate_positive_int("warmup_runs", warmup_runs)
+    _validate_positive_int("repeat_runs", repeat_runs)
+
+
 def build_gpu_benchmark_plan(
     *,
     models: tuple[str, ...],
@@ -112,6 +130,11 @@ def build_gpu_benchmark_plan(
     """Return a dependency-light description of the intended GPU benchmark."""
 
     validate_gpu_benchmark_axes(variants=variants, kernels=kernels)
+    validate_gpu_benchmark_numbers(
+        max_new_tokens=max_new_tokens,
+        warmup_runs=warmup_runs,
+        repeat_runs=repeat_runs,
+    )
     return {
         "models": list(models),
         "variants": list(variants),
@@ -394,6 +417,13 @@ def run_single_gpu_benchmark(
     trust_remote_code: bool = False,
 ) -> GPUBenchmarkRun:
     """Run one model/variant/kernel benchmark and return a structured result."""
+
+    validate_gpu_benchmark_axes(variants=(variant,), kernels=(kernel,))
+    validate_gpu_benchmark_numbers(
+        max_new_tokens=max_new_tokens,
+        warmup_runs=warmup_runs,
+        repeat_runs=repeat_runs,
+    )
 
     label = GPUBenchmarkRun(
         model=model_name,
