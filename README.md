@@ -160,18 +160,27 @@ uv run python demo.py gpu-benchmark --dry-run
 The HTML report includes:
 
 - **Throughput table**: token/s per variant, with BF16 baseline.
-- **Memory table**: GPU memory per variant.
-- **Compression ratio**: BF16 memory ÷ variant memory.
-- **SVG plots**: speed and memory comparisons.
+- **Memory table**: model memory and total GPU memory delta per variant.
+- **Compression ratio**: BF16 model memory ÷ variant model memory when available.
+- **SVG plots**: speed, model-memory, total-GPU-delta, and compression comparisons.
 
 The JSON output contains the full run data for further analysis.
 
-> **Note on memory measurement**: The benchmark measures GPU memory via
-> `nvidia-smi`, which includes both model weights and vLLM's KV cache pool.
-> With high `--vllm-gpu-memory-utilization` (default 0.85), the KV cache fills
-> the remaining GPU space, making total memory look similar across variants.
-> The actual model weight memory for FP8 (~9 GiB) is substantially lower than
-> BF16 (~15 GiB) for an 8B model.
+> **Note on memory measurement**: For vLLM rows, `model_memory_gib` is parsed from
+> vLLM's model-loading log (`Model loading took ... GiB`). `gpu_memory_delta_gib`
+> is the `nvidia-smi` used-memory delta, which includes model weights, CUDA
+> graphs, runtime workspaces, and vLLM's KV cache block pool. With high
+> `--vllm-gpu-memory-utilization`, the KV cache intentionally fills most of the
+> remaining GPU space, so total GPU delta can look almost identical across BF16
+> and FP8 even when the model weights are smaller. Compression ratios use model
+> memory first and fall back to allocator/total GPU memory only when model memory
+> is unavailable.
+>
+> **Note on small models**: FP8 is not automatically faster. For small models or
+> very short generations, online FP8 quantization and FP8 KV-cache conversion
+> overhead can be larger than the memory-bandwidth savings. Increase
+> `--max-new-tokens`, `--repeat-runs`, and prompt batch size before drawing a
+> steady-state throughput conclusion.
 
 ## Model compression (quantization)
 

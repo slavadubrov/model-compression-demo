@@ -7,6 +7,7 @@ import pytest
 from compression_demo.gpu_benchmarks import (
     GPUBenchmarkRun,
     _parse_nvidia_smi_used_memory_gib,
+    _parse_vllm_model_memory_from_lines,
     build_gpu_benchmark_plan,
     format_gpu_benchmark_plan,
     summarize_gpu_benchmark_results,
@@ -123,7 +124,8 @@ def test_gpu_benchmark_report_writes_html(tmp_path) -> None:
                 "model": "Qwen/Qwen3.5-9B",
                 "variant": "fp8-dynamic",
                 "kernel": "vllm",
-                "peak_allocated_gib": 9.0,
+                "model_memory_gib": 8.9,
+                "memory_basis_gib": 8.9,
             },
             "best_compression": {
                 "model": "Qwen/Qwen3.5-9B",
@@ -140,8 +142,9 @@ def test_gpu_benchmark_report_writes_html(tmp_path) -> None:
                 "status": "ok",
                 "generated_tokens_per_second": 10.0,
                 "peak_allocated_gib": None,
-                "peak_reserved_gib": 16.4,
+                "peak_reserved_gib": None,
                 "model_memory_gib": 16.0,
+                "gpu_memory_delta_gib": 23.0,
                 "compression_ratio_vs_bf16": 1.0,
                 "error": None,
             },
@@ -151,8 +154,10 @@ def test_gpu_benchmark_report_writes_html(tmp_path) -> None:
                 "kernel": "vllm",
                 "status": "ok",
                 "generated_tokens_per_second": 18.0,
-                "peak_allocated_gib": 9.0,
+                "peak_allocated_gib": None,
+                "peak_reserved_gib": None,
                 "model_memory_gib": 8.9,
+                "gpu_memory_delta_gib": 22.9,
                 "compression_ratio_vs_bf16": 1.8,
                 "error": None,
             },
@@ -168,7 +173,9 @@ def test_gpu_benchmark_report_writes_html(tmp_path) -> None:
     assert "Best FP8 throughput comparison" in html
     assert "nvidia-smi used-memory delta" in html
     assert "Generation Throughput" in html
-    assert "Peak Allocated GPU Memory" in html
+    assert "Model Memory Footprint" in html
+    assert "Total GPU Memory Delta" in html
+    assert "GPU Delta GiB" in html
     assert "Compression Ratio vs BF16 Memory Footprint" in html
     assert "No successful measurements." not in html
     assert "Qwen3.5-9B" in html
@@ -236,3 +243,19 @@ def test_nvidia_smi_memory_parser_reads_mib_values() -> None:
     assert _parse_nvidia_smi_used_memory_gib("1024\n") == 1.0
     assert _parse_nvidia_smi_used_memory_gib("2048 MiB\n") == 2.0
     assert _parse_nvidia_smi_used_memory_gib("not available\n") is None
+
+
+def test_vllm_model_memory_parser_reads_current_log_formats() -> None:
+    assert (
+        _parse_vllm_model_memory_from_lines(
+            ["INFO model_runner.py:320] Model loading took 1.23 GiB and 2.000000 seconds"]
+        )
+        == 1.23
+    )
+    assert (
+        _parse_vllm_model_memory_from_lines(
+            ["INFO gpu_model_runner.py:5188] Model loading took 4.56 GiB memory and 7s"]
+        )
+        == 4.56
+    )
+    assert _parse_vllm_model_memory_from_lines(["no memory line"]) is None

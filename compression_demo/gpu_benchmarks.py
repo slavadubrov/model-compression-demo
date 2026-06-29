@@ -18,6 +18,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import traceback
 import urllib.request
@@ -80,6 +81,7 @@ class GPUBenchmarkRun:
     model_memory_gib: float | None = None
     peak_allocated_gib: float | None = None
     peak_reserved_gib: float | None = None
+    gpu_memory_delta_gib: float | None = None
     compression_ratio_vs_bf16: float | None = None
     response_preview: str | None = None
 
@@ -362,7 +364,6 @@ def _max_positive(*values: float | None) -> float | None:
 
 def _parse_vllm_model_memory_gib(log_path: str) -> float | None:
     """Parse 'Model loading took X GiB' from a vLLM engine log file."""
-    import re
 
     try:
         with open(log_path) as fh:
@@ -377,10 +378,19 @@ def _parse_vllm_model_memory_from_lines(lines: Iterable[str]) -> float | None:
     import re
 
     for line in lines:
-        m = re.search(r"Model loading took\s+([\d.]+)\s+GiB", line)
+        m = re.search(r"Model loading took\s+([\d.]+)\s+GiB(?:\s+memory)?", line)
         if m:
             return float(m.group(1))
     return None
+
+
+def _file_tail(path: str, max_chars: int = 4000) -> str:
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            content = fh.read()
+    except OSError:
+        return ""
+    return content[-max_chars:]
 
 
 def _running_in_wsl() -> bool:
@@ -503,7 +513,7 @@ def _clear_cuda() -> None:
 
 def _kill_orphan_procs() -> None:
     """Kill leftover multiprocessing children / resource-trackers holding GPU memory.
-    
+
     Uses ``fuser`` to find processes touching ``/dev/nvidia*`` that are not ours,
     then SIGKILLs them.  Falls back to scanning ``/proc`` if fuser is unavailable.
     """
@@ -515,7 +525,9 @@ def _kill_orphan_procs() -> None:
     try:
         completed = subprocess.run(
             ["fuser", "-v", "/dev/nvidia*"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         for token in completed.stdout.split():
             try:
@@ -725,11 +737,24 @@ def _run_vllm_benchmark(
     if variant == "fp8-dynamic-kv":
         cmd.append("--kv-cache-dtype=fp8")
 
+    log_file = tempfile.NamedTemporaryFile(
+        "w+",
+        encoding="utf-8",
+        prefix="model-compression-vllm-",
+        suffix=".log",
+        delete=False,
+    )
+    log_path = log_file.name
     load_start = time.perf_counter()
-    print(f"  Starting vLLM server for {variant} on port {port} (enforce_eager={vllm_enforce_eager}) ...", flush=True)
+    print(
+        f"  Starting vLLM server for {variant} on port {port} "
+        f"(enforce_eager={vllm_enforce_eager}) ...",
+        flush=True,
+    )
     proc = subprocess.Popen(
         cmd,
-        stdout=subprocess.DEVNULL,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
         stdin=subprocess.DEVNULL,
     )
 
@@ -761,9 +786,11 @@ def _run_vllm_benchmark(
             poll_code = proc.poll()
             if poll_code is not None:
                 _kill_server()
+                log_file.flush()
+                log_tail = _file_tail(log_path)
                 raise RuntimeError(
                     f"vLLM server exited with code {poll_code} before becoming healthy. "
-                    "Check the error output above."
+                    f"Recent vLLM log:\n{log_tail}"
                 )
             try:
                 urllib.request.urlopen(health_url, timeout=5)
@@ -778,6 +805,8 @@ def _run_vllm_benchmark(
             raise RuntimeError(f"vLLM server did not become healthy within 120 min at {base_url}")
 
         load_seconds = time.perf_counter() - load_start
+        log_file.flush()
+        vllm_model_memory_gib = _parse_vllm_model_memory_gib(log_path)
         load_used_gib = _nvidia_smi_used_memory_gib(device_index)
         load_delta_gib = _positive_delta(load_used_gib, baseline_used_gib)
         peak_used_gib = load_used_gib
@@ -832,9 +861,16 @@ def _run_vllm_benchmark(
 
     finally:
         _kill_server()
+        log_file.close()
 
     peak_delta_gib = _positive_delta(peak_used_gib, baseline_used_gib)
-    model_memory_gib = _max_positive(load_delta_gib, peak_delta_gib)
+    gpu_memory_delta_gib = _max_positive(load_delta_gib, peak_delta_gib)
+    if vllm_model_memory_gib is None:
+        vllm_model_memory_gib = _parse_vllm_model_memory_gib(log_path)
+    try:
+        os.unlink(log_path)
+    except OSError:
+        pass
 
     _force_cuda_cleanup()
 
@@ -852,9 +888,8 @@ def _run_vllm_benchmark(
         generated_tokens_per_second=generated_tokens / mean_seconds,
         input_tokens=input_tokens,
         generated_tokens=generated_tokens,
-        model_memory_gib=model_memory_gib,
-        peak_allocated_gib=peak_delta_gib,
-        peak_reserved_gib=peak_delta_gib,
+        model_memory_gib=vllm_model_memory_gib,
+        gpu_memory_delta_gib=gpu_memory_delta_gib,
         response_preview=response_preview,
     )
 
@@ -1025,6 +1060,8 @@ def _memory_basis_gib(run: GPUBenchmarkRun) -> float | None:
         return run.model_memory_gib
     if run.peak_allocated_gib and run.peak_allocated_gib > 0:
         return run.peak_allocated_gib
+    if run.gpu_memory_delta_gib and run.gpu_memory_delta_gib > 0:
+        return run.gpu_memory_delta_gib
     return None
 
 
@@ -1238,7 +1275,15 @@ def _run_label(run: dict[str, Any]) -> str:
 
 
 def _report_memory_gib(row: dict[str, Any]) -> float | None:
-    for key in ("peak_allocated_gib", "model_memory_gib", "peak_reserved_gib"):
+    for key in ("model_memory_gib", "peak_allocated_gib", "peak_reserved_gib"):
+        value = row.get(key)
+        if isinstance(value, int | float) and value > 0:
+            return float(value)
+    return None
+
+
+def _report_total_gpu_memory_gib(row: dict[str, Any]) -> float | None:
+    for key in ("gpu_memory_delta_gib", "peak_allocated_gib", "peak_reserved_gib"):
         value = row.get(key)
         if isinstance(value, int | float) and value > 0:
             return float(value)
@@ -1324,6 +1369,29 @@ def _best_fp8_speedup(rows: list[dict[str, Any]]) -> tuple[dict[str, Any], float
     return max(comparisons, key=lambda item: item[1], default=None)
 
 
+def _fp8_slowdowns(rows: list[dict[str, Any]]) -> list[tuple[dict[str, Any], float]]:
+    bf16_by_model_kernel: dict[tuple[Any, Any], float] = {}
+    for row in rows:
+        throughput = _numeric(row.get("generated_tokens_per_second"))
+        if row.get("status") == "ok" and row.get("variant") == "bf16" and throughput:
+            bf16_by_model_kernel[(row.get("model"), row.get("kernel"))] = throughput
+
+    comparisons: list[tuple[dict[str, Any], float]] = []
+    for row in rows:
+        variant = str(row.get("variant", ""))
+        throughput = _numeric(row.get("generated_tokens_per_second"))
+        baseline = bf16_by_model_kernel.get((row.get("model"), row.get("kernel")))
+        if (
+            row.get("status") == "ok"
+            and variant.startswith("fp8")
+            and throughput
+            and baseline
+            and throughput < baseline
+        ):
+            comparisons.append((row, throughput / baseline))
+    return sorted(comparisons, key=lambda item: item[1])
+
+
 def _report_conclusions(payload: dict[str, Any]) -> str:
     rows = payload.get("runs", [])
     summary = payload.get("summary", {})
@@ -1363,6 +1431,17 @@ def _report_conclusions(payload: dict[str, Any]) -> str:
             "for a direct speedup calculation."
         )
 
+    fp8_slowdowns = _fp8_slowdowns(rows)
+    if fp8_slowdowns:
+        row, speedup = fp8_slowdowns[0]
+        items.append(
+            "Slowest FP8 throughput comparison: "
+            f"{html.escape(_run_label(row))} measured {speedup:.2f}x the BF16 "
+            "throughput for the same model and kernel. This can happen on small models or "
+            "short generations when FP8 quantization/KV conversion overhead is larger than "
+            "the memory-bandwidth savings."
+        )
+
     failed_runs = int(summary.get("failed_runs") or 0)
     skipped_runs = int(summary.get("skipped_runs") or 0)
     if failed_runs or skipped_runs:
@@ -1374,28 +1453,26 @@ def _report_conclusions(payload: dict[str, Any]) -> str:
     vllm_memory_missing = any(
         row.get("status") == "ok"
         and row.get("kernel") == "vllm"
-        and row.get("peak_allocated_gib") is None
+        and row.get("gpu_memory_delta_gib") is None
+        and row.get("model_memory_gib") is None
         for row in rows
     )
     vllm_memory_present = any(
         row.get("status") == "ok"
         and row.get("kernel") == "vllm"
-        and (
-            row.get("peak_allocated_gib") is not None
-            or row.get("model_memory_gib") is not None
-            or row.get("peak_reserved_gib") is not None
-        )
+        and (row.get("gpu_memory_delta_gib") is not None or row.get("model_memory_gib") is not None)
         for row in rows
     )
     if vllm_memory_present:
         items.append(
-            "For vLLM rows, memory falls back to an nvidia-smi used-memory delta when "
-            "torch CUDA allocator counters do not see the engine process."
+            "For vLLM rows, Model GiB is parsed from the engine's model-loading log. "
+            "GPU Delta GiB is the nvidia-smi used-memory delta, which includes the KV "
+            "cache block pool and other serving allocations."
         )
     elif vllm_memory_missing:
         items.append(
-            "vLLM memory cells are blank because neither torch CUDA counters nor the "
-            "nvidia-smi fallback returned a usable allocation delta."
+            "vLLM memory cells are blank because neither the engine model-loading log nor "
+            "the nvidia-smi fallback returned a usable memory measurement."
         )
 
     return (
@@ -1426,7 +1503,7 @@ def write_gpu_benchmark_report(payload: dict[str, Any], report_html: str) -> Non
             f"<td>{html.escape(str(row.get('kernel')))}</td>"
             f"<td>{html.escape(str(row.get('status')))}</td>"
             f"<td>{_fmt(row.get('generated_tokens_per_second'))}</td>"
-            f"<td>{_fmt(_report_memory_gib(row))}</td>"
+            f"<td>{_fmt(_report_total_gpu_memory_gib(row))}</td>"
             f"<td>{_fmt(row.get('model_memory_gib'))}</td>"
             f"<td>{_fmt(row.get('compression_ratio_vs_bf16'), suffix='x')}</td>"
             f"<td><code>{html.escape(error.splitlines()[0] if error else '')}</code></td>"
@@ -1524,7 +1601,17 @@ def write_gpu_benchmark_report(payload: dict[str, Any], report_html: str) -> Non
     memory_chart = _bar_chart(
         rows=chart_rows,
         metric="report_memory_gib",
-        title="Peak Allocated GPU Memory",
+        title="Model Memory Footprint",
+        unit=" GiB",
+        lower_is_better=True,
+    )
+    total_gpu_chart_rows = [
+        {**row, "report_total_gpu_memory_gib": _report_total_gpu_memory_gib(row)} for row in ok_rows
+    ]
+    total_gpu_chart = _bar_chart(
+        rows=total_gpu_chart_rows,
+        metric="report_total_gpu_memory_gib",
+        title="Total GPU Memory Delta",
         unit=" GiB",
         lower_is_better=True,
     )
@@ -1565,6 +1652,7 @@ def write_gpu_benchmark_report(payload: dict[str, Any], report_html: str) -> Non
     </section>
     {throughput_chart}
     {memory_chart}
+    {total_gpu_chart}
     {compression_chart}
     <section>
       <h2>Measurements</h2>
@@ -1572,7 +1660,7 @@ def write_gpu_benchmark_report(payload: dict[str, Any], report_html: str) -> Non
         <thead>
           <tr>
             <th>Model</th><th>Variant</th><th>Kernel</th><th>Status</th>
-            <th>Tok/s</th><th>Peak GiB</th><th>Model GiB</th><th>Compression</th><th>Error</th>
+            <th>Tok/s</th><th>GPU Delta GiB</th><th>Model GiB</th><th>Compression</th><th>Error</th>
           </tr>
         </thead>
         <tbody>{"".join(table_rows)}</tbody>
