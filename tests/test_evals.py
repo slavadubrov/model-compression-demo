@@ -23,6 +23,7 @@ def test_quality_plan_covers_article_eval_checks() -> None:
     assert "perplexity comparison" in plan.checks
     assert "task metrics via lm_eval" in plan.checks
     assert "long-context anchor probe" in plan.checks
+    assert "accelerate" in plan.required_modules
     assert "datasets" in plan.required_modules
     assert "lm_eval" in plan.required_modules
     assert plan.lm_eval_task == "hellaswag"
@@ -52,7 +53,24 @@ def test_format_quality_eval_plan_lists_missing_install_command(monkeypatch) -> 
 
     assert "Quality evaluation plan" in formatted
     assert "perplexity comparison" in formatted
-    assert "uv pip install torch transformers datasets lm_eval" in formatted
+    assert "uv sync --group quality" in formatted
+
+
+def test_quality_plan_requires_compressed_tensors_for_local_quantized_model(tmp_path) -> None:
+    compressed = tmp_path / "compressed"
+    compressed.mkdir()
+    (compressed / "config.json").write_text(
+        '{"quantization_config": {"quant_method": "compressed-tensors"}}',
+        encoding="utf-8",
+    )
+
+    plan = build_quality_eval_plan(
+        base_model="base",
+        compressed_model=str(compressed),
+        mode="generation",
+    )
+
+    assert "compressed_tensors" in plan.required_modules
 
 
 def test_lm_eval_command_uses_hf_model() -> None:

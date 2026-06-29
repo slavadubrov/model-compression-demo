@@ -23,7 +23,7 @@ DEFAULT_PROMPTS = (
     "Summarize why KV cache memory matters for long-context LLM serving.",
 )
 
-QUALITY_EVAL_INSTALL_COMMAND = "uv pip install torch transformers datasets lm_eval"
+QUALITY_EVAL_INSTALL_COMMAND = "uv sync --group quality"
 DEFAULT_LM_EVAL_TASK = "hellaswag"
 DEFAULT_LM_EVAL_LIMIT = 50
 DEFAULT_MAX_PERPLEXITY_DELTA_PCT = 5.0
@@ -83,6 +83,21 @@ def _module_available(name: str) -> bool:
     return importlib.util.find_spec(name) is not None
 
 
+def _local_model_uses_compressed_tensors(model_path: str) -> bool:
+    config_path = Path(model_path) / "config.json"
+    if not config_path.is_file():
+        return False
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    quantization_config = config.get("quantization_config")
+    return (
+        isinstance(quantization_config, dict)
+        and quantization_config.get("quant_method") == "compressed-tensors"
+    )
+
+
 def _validate_positive_int(name: str, value: int) -> None:
     if value <= 0:
         raise ValueError(f"{name} must be a positive integer")
@@ -126,8 +141,10 @@ def _checks_for_mode(
     return tuple(checks)
 
 
-def _required_modules(checks: tuple[str, ...]) -> tuple[str, ...]:
-    modules = {"torch", "transformers"}
+def _required_modules(checks: tuple[str, ...], compressed_model: str | None) -> tuple[str, ...]:
+    modules = {"accelerate", "torch", "transformers"}
+    if compressed_model and _local_model_uses_compressed_tensors(compressed_model):
+        modules.add("compressed_tensors")
     if "perplexity comparison" in checks:
         modules.add("datasets")
     if "task metrics via lm_eval" in checks:
@@ -181,7 +198,7 @@ def build_quality_eval_plan(
         max_perplexity_delta_pct=max_perplexity_delta_pct,
         max_task_regression=max_task_regression,
         require_long_context_anchor=require_long_context_anchor,
-        required_modules=_required_modules(checks),
+        required_modules=_required_modules(checks, compressed_model),
         output_json=output_json,
     )
 
@@ -244,7 +261,10 @@ def _require_modules(*modules: str) -> None:
 
 
 def _load_causal_lm(model_path: str):
-    _require_modules("torch", "transformers")
+    modules = ["accelerate", "torch", "transformers"]
+    if _local_model_uses_compressed_tensors(model_path):
+        modules.append("compressed_tensors")
+    _require_modules(*modules)
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 

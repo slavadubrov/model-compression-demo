@@ -269,7 +269,9 @@ vllm serve outputs/Qwen3-8B-W4A16 --max-model-len 4096
 
 ### Quality evaluation
 
-After compression, validate the checkpoint before promoting to production:
+After compression, validate the checkpoint before promoting to production. Install
+quality-eval dependencies with `make install-quality`; `make quality-eval` runs
+that sync before executing the gate.
 
 ```bash
 uv run python demo.py quality-eval \
@@ -328,7 +330,7 @@ For a quick one-liner, run `make serve-bench-plan`.
 
 ```bash
 make help             # List available recipes
-make venv             # uv sync --group dev
+make venv             # uv sync --group dev --inexact
 make format           # Apply Ruff formatting
 make lint             # Run Ruff lint checks
 make test             # Run pytest suite
@@ -342,7 +344,10 @@ make dry-run-all      # Run article-support dry-run pipeline
 make gpu-bench        # Quick smoke test (BF16, PyTorch SDPA)
 make gpu-bench-vllm   # Full FP8 benchmark (vLLM, Qwen3-8B, RTX 4090)
 
-# Compression
+# Compression and quality
+make install-quality       # Install quality-eval dependencies
+make quality-eval          # Run the quality gate
+make quality-eval-plan     # Dry-run the quality gate plan
 make install-compression   # Install llm-compressor + dependencies
 make install-serving       # Install vLLM in .venv-vllm
 make install-gptqmodel     # Install GPTQModel isolated

@@ -19,6 +19,16 @@ dev = [
     "pytest>=8.0.0",
     "ruff>=0.12.0",
 ]
+quality = [
+    "accelerate",
+    "compressed-tensors==0.10.2",
+    "datasets",
+    "lm_eval",
+    "numpy<2",
+    "pyarrow<21",
+    "torch",
+    "transformers==4.52.4",
+]
 compression = [
     "accelerate",
     "bitsandbytes",
@@ -53,6 +63,16 @@ select = ["E", "F", "I", "UP"]
 testpaths = ["tests"]
 
 [tool.model-compression-demo.runtime-stacks]
+quality = [
+    "accelerate",
+    "compressed-tensors==0.10.2",
+    "datasets",
+    "lm_eval",
+    "numpy<2",
+    "pyarrow<21",
+    "torch",
+    "transformers==4.52.4",
+]
 compression = [
     "accelerate",
     "bitsandbytes",

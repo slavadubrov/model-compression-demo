@@ -20,6 +20,7 @@ help:
 		'  make smoke-html            Validate the HTML guide structure.' \
 		'  make check                 Run format-check, lint, test, smoke-html.' \
 		'  make clean                 Remove the local venv and generated caches.' \
+		'  make install-quality       Install quality evaluation packages.' \
 		'  make install-compression   Install llm-compressor compatible packages.' \
 		'  make install-serving       Install vLLM into .venv-vllm.' \
 		'  make install-gptqmodel     Install GPTQModel into .venv-gptqmodel.' \
@@ -50,7 +51,7 @@ help:
 
 .PHONY: venv
 venv:
-	uv sync --group dev
+	uv sync --group dev --inexact
 
 .PHONY: clean
 clean:
@@ -81,9 +82,13 @@ check: format-check lint test smoke-html
 
 # ── Install runtimes ─────────────────────────────────
 
+.PHONY: install-quality
+install-quality:
+	uv sync --group dev --group quality --inexact
+
 .PHONY: install-compression
 install-compression:
-	uv sync --group dev --group compression
+	uv sync --group dev --group compression --inexact
 	-uv pip uninstall torchvision torchaudio
 
 .PHONY: install-serving
@@ -135,7 +140,7 @@ quantize-plan: venv
 # ── Quality evaluation ───────────────────────────────
 
 .PHONY: quality-eval
-quality-eval: venv
+quality-eval: install-quality
 	uv run python demo.py quality-eval \
 		--base-model $(MODEL) \
 		--compressed-model $(COMPRESSED_DIR) \

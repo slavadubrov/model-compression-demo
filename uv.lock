@@ -996,6 +996,16 @@ dev = [
     { name = "pytest" },
     { name = "ruff" },
 ]
+quality = [
+    { name = "accelerate" },
+    { name = "compressed-tensors" },
+    { name = "datasets" },
+    { name = "lm-eval" },
+    { name = "numpy" },
+    { name = "pyarrow" },
+    { name = "torch" },
+    { name = "transformers" },
+]
 
 [package.metadata]
 
@@ -1017,6 +1027,16 @@ compression = [
 dev = [
     { name = "pytest", specifier = ">=8.0.0" },
     { name = "ruff", specifier = ">=0.12.0" },
+]
+quality = [
+    { name = "accelerate" },
+    { name = "compressed-tensors", specifier = "==0.10.2" },
+    { name = "datasets" },
+    { name = "lm-eval" },
+    { name = "numpy", specifier = "<2" },
+    { name = "pyarrow", specifier = "<21" },
+    { name = "torch" },
+    { name = "transformers", specifier = "==4.52.4" },
 ]
 
 [[package]]
