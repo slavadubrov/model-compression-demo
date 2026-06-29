@@ -1,5 +1,7 @@
 # LLM Serving Compression Demo and Selection Guide
 
+![Compression Demo](docs/compression-demo.png)
+
 This directory is a standalone support project for a blog article about model
 compression and quantization approaches. It focuses on text LLM serving:
 `llm-compressor` GPTQ W4A16 and FP8 paths, current industry alternatives, local
