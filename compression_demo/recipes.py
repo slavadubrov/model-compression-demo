@@ -132,11 +132,11 @@ def recipe_snippet(algorithm_key: str) -> str:
             )
 
             oneshot(
-                model="Qwen/Qwen3-0.6B",
+                model="Qwen/Qwen3-8B",
                 dataset="wikitext",
                 dataset_config_name="wikitext-2-raw-v1",
                 recipe=recipe,
-                output_dir="outputs/Qwen3-0.6B-W4A16",
+                output_dir="outputs/Qwen3-8B-W4A16",
                 max_seq_length=4096,
                 num_calibration_samples=256,
             )
@@ -152,57 +152,9 @@ def recipe_snippet(algorithm_key: str) -> str:
             )
 
             oneshot(
-                model="Qwen/Qwen3-0.6B",
+                model="Qwen/Qwen3-8B",
                 recipe=recipe,
-                output_dir="outputs/Qwen3-0.6B-W8A16",
-            )
-        """,
-        "awq-w4a16": """
-            from llmcompressor import oneshot
-            from llmcompressor.modifiers.awq import AWQModifier
-            from llmcompressor.modifiers.quantization import QuantizationModifier
-
-            recipe = [
-                AWQModifier(),
-                QuantizationModifier(
-                    scheme="W4A16_ASYM",
-                    targets=["Linear"],
-                    ignore=["lm_head"],
-                ),
-            ]
-
-            oneshot(
-                model="Qwen/Qwen3-0.6B",
-                dataset="wikitext",
-                dataset_config_name="wikitext-2-raw-v1",
-                recipe=recipe,
-                output_dir="outputs/Qwen3-0.6B-AWQ-W4A16",
-                max_seq_length=4096,
-                num_calibration_samples=256,
-            )
-        """,
-        "smoothquant-w8a8": """
-            from llmcompressor import oneshot
-            from llmcompressor.modifiers.quantization import QuantizationModifier
-            from llmcompressor.modifiers.smoothquant import SmoothQuantModifier
-
-            recipe = [
-                SmoothQuantModifier(smoothing_strength=0.8),
-                QuantizationModifier(
-                    scheme="W8A8",
-                    targets="Linear",
-                    ignore=["lm_head"],
-                ),
-            ]
-
-            oneshot(
-                model="Qwen/Qwen3-0.6B",
-                dataset="wikitext",
-                dataset_config_name="wikitext-2-raw-v1",
-                recipe=recipe,
-                output_dir="outputs/Qwen3-0.6B-W8A8",
-                max_seq_length=4096,
-                num_calibration_samples=256,
+                output_dir="outputs/Qwen3-8B-W8A16",
             )
         """,
         "fp8-dynamic": """
@@ -210,7 +162,7 @@ def recipe_snippet(algorithm_key: str) -> str:
             from llmcompressor.modifiers.quantization import QuantizationModifier
             from transformers import AutoModelForCausalLM, AutoTokenizer
 
-            model_id = "Qwen/Qwen3-0.6B"
+            model_id = "Qwen/Qwen3-8B"
             model = AutoModelForCausalLM.from_pretrained(model_id, device_map="auto")
             tokenizer = AutoTokenizer.from_pretrained(model_id)
 
@@ -223,86 +175,6 @@ def recipe_snippet(algorithm_key: str) -> str:
             oneshot(model=model, recipe=recipe)
             model.save_pretrained("outputs/Qwen3-0.6B-FP8-Dynamic", save_compressed=True)
             tokenizer.save_pretrained("outputs/Qwen3-0.6B-FP8-Dynamic")
-        """,
-        "autoround-w4a16": """
-            # AutoRound is listed as a roadmap recipe stub, not an executable path
-            # in this beginner demo. Use the upstream AutoRound package and validate
-            # the exported checkpoint against the same quality gates in this repo.
-            #
-            # Typical shape:
-            # 1. Install AutoRound for the target CUDA stack.
-            # 2. Calibrate on representative production-shaped prompts.
-            # 3. Export a W4A16-compatible checkpoint.
-            # 4. Run `quality-eval --mode all` before promotion.
-        """,
-        "bnb-nf4": """
-            from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-
-            model_id = "Qwen/Qwen3-0.6B"
-            quantization_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype="bfloat16",
-            )
-            tokenizer = AutoTokenizer.from_pretrained(model_id)
-            model = AutoModelForCausalLM.from_pretrained(
-                model_id,
-                device_map="auto",
-                quantization_config=quantization_config,
-            )
-        """,
-        "gptqmodel-w4a16": """
-            from datasets import load_dataset
-            from gptqmodel import GPTQModel, QuantizeConfig
-
-            model_id = "Qwen/Qwen3-0.6B"
-            calibration = load_dataset("wikitext", "wikitext-2-raw-v1", split="train[:256]")
-            quant_config = QuantizeConfig(bits=4, group_size=128)
-            model = GPTQModel.load(model_id, quant_config)
-            model.quantize(calibration)
-            model.save("outputs/Qwen3-0.6B-GPTQModel-W4A16")
-        """,
-        "gguf-q4": """
-            # llama.cpp example after building llama.cpp tools:
-            python convert_hf_to_gguf.py Qwen/Qwen3-0.6B --outfile Qwen3-0.6B-f16.gguf
-            ./llama-quantize Qwen3-0.6B-f16.gguf Qwen3-0.6B-Q4_K_M.gguf Q4_K_M
-            ./llama-server -m Qwen3-0.6B-Q4_K_M.gguf -c 4096
-        """,
-        "kv-cache-fp8": """
-            # vLLM serving-side example. Confirm the exact flag names for your vLLM version.
-            vllm serve ./outputs/Qwen3-0.6B-FP8-Dynamic \\
-              --quantization fp8 \\
-              --kv-cache-dtype fp8 \\
-              --max-model-len 32768 \\
-              --enable-prefix-caching
-        """,
-        "nvfp4-mxfp4": """
-            # Recipe stub: NVFP4/MXFP4 is a hardware-specific Blackwell path.
-            # This demo tracks the decision point but does not execute it on a
-            # generic workstation.
-            #
-            # Before using it:
-            # 1. Confirm the exact Blackwell runtime, vLLM/ModelOpt/llm-compressor
-            #    versions, and checkpoint format support.
-            # 2. Calibrate on representative prompts, not WikiText alone.
-            # 3. Compare against FP8 and W4A16 baselines with `quality-eval`.
-        """,
-        "svdquant-nunchaku": """
-            # SVDQuant/Nunchaku are image-model and diffusion compression tools.
-            # They are outside this text-LLM serving demo's executable path.
-            #
-            # Use a separate image-model validation loop:
-            # 1. Pick model-specific calibration prompts.
-            # 2. Quantize with the upstream SVDQuant/Nunchaku workflow.
-            # 3. Compare latency, memory, and image quality on representative prompts.
-        """,
-        "distillation": """
-            # Distillation is a training workflow, not a checkpoint-only compression recipe.
-            # Typical loop:
-            # 1. Select task data and teacher model.
-            # 2. Generate teacher logits or rationales.
-            # 3. Fine-tune a smaller student.
-            # 4. Evaluate the student against task metrics, latency, and cost.
         """,
     }
     return dedent(snippets[algorithm_key]).strip() + "\n"
@@ -373,11 +245,11 @@ def build_vllm_serve_command(
     """Return a vLLM serving command matched to the selected algorithm."""
 
     command = ["vllm", "serve", model_path, "--max-model-len", str(max_model_len)]
-    if algorithm_key in {"fp8-dynamic", "kv-cache-fp8"}:
+    if algorithm_key == "fp8-dynamic":
         command.extend(["--quantization", "fp8"])
-    if fp8_kv_cache or algorithm_key == "kv-cache-fp8":
+    if fp8_kv_cache:
         command.extend(["--kv-cache-dtype", "fp8"])
-    if enable_prefix_caching or algorithm_key == "kv-cache-fp8":
+    if enable_prefix_caching:
         command.append("--enable-prefix-caching")
     if tensor_parallel_size > 1:
         command.extend(["--tensor-parallel-size", str(tensor_parallel_size)])
@@ -416,14 +288,29 @@ def run_llmcompressor_quantization(
             "max_seq_length": max_seq_length,
             "num_calibration_samples": num_calibration_samples,
         }
-        if calibration_file:
-            from datasets import Dataset
+        from datasets import Dataset
 
+        if calibration_file:
             records = load_calibration_records(calibration_file, text_column=text_column)
-            oneshot_kwargs["dataset"] = Dataset.from_list(records)
         else:
-            oneshot_kwargs["dataset"] = dataset
-            oneshot_kwargs["dataset_config_name"] = dataset_config_name
+            from datasets import load_dataset
+
+            raw_records = load_dataset(
+                dataset,
+                dataset_config_name,
+                split=f"train[:{num_calibration_samples}]",
+            )
+            records = []
+            for row in raw_records:
+                text = str(row.get(text_column, "")).strip()
+                if text:
+                    records.append({text_column: text})
+            if not records:
+                raise ValueError(
+                    f"Dataset {dataset}/{dataset_config_name} did not provide text column "
+                    f"{text_column!r}"
+                )
+        oneshot_kwargs["dataset"] = Dataset.from_list(records)
         oneshot(**oneshot_kwargs)
         return
 

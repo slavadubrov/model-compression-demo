@@ -1,22 +1,12 @@
-UV ?= uv
-PYTHON ?= python
-DEMO ?= demo.py
-
-PARAMS_B ?= 7
-SCHEME ?= w4a16
-CONTEXT ?= 4096
-CONCURRENCY ?= 4
-HARDWARE ?= ampere
-GOAL ?= fit-memory
+# ── Shared overrides ─────────────────────────────────
 ALGORITHM ?= gptq-w4a16
-BASE_MODEL ?= Qwen/Qwen3-0.6B
-COMPRESSED_MODEL ?= outputs/Qwen3-0.6B-W4A16
-LM_EVAL_TASK ?= hellaswag
-QUALITY_JSON ?= reports/qwen3-0.6b-w4a16-quality.json
-BENCHMARK_MODEL ?= Qwen/Qwen2.5-32B-Instruct
-BENCHMARK_ALGORITHMS ?= gptq-w4a16,awq-w4a16,bnb-nf4,gguf-q4
-BENCHMARK_JSON ?= reports/quantization-benchmark-plan.json
-ARGS ?=
+MODEL     ?= Qwen/Qwen3-8B
+ARGS      ?=
+
+# ── Derived values (from MODEL and ALGORITHM) ────────
+_MODEL_SLUG = $(subst /,-,$(notdir $(MODEL)))
+_ALGO_SUFFIX = $(strip $(if $(filter gptq-w4a16,$(ALGORITHM)),W4A16,$(if $(filter rtn-w8a16,$(ALGORITHM)),W8A16,$(if $(filter fp8-dynamic,$(ALGORITHM)),FP8-Dynamic,COMPRESSED))))
+COMPRESSED_DIR ?= outputs/$(_MODEL_SLUG)-$(_ALGO_SUFFIX)
 
 .PHONY: help
 help:
@@ -30,108 +20,182 @@ help:
 		'  make smoke-html            Validate the HTML guide structure.' \
 		'  make check                 Run format-check, lint, test, smoke-html.' \
 		'  make clean                 Remove the local venv and generated caches.' \
-		'  make run ARGS="..."        Run demo.py with arbitrary CLI args.' \
-		'  make run_<command> ARGS="..." Run a demo.py command; underscores become hyphens.' \
+		'  make install-compression   Install llm-compressor compatible packages.' \
+		'  make install-serving       Install vLLM into .venv-vllm.' \
+		'  make install-gptqmodel     Install GPTQModel into .venv-gptqmodel.' \
+		'' \
 		'  make plan                  Run the memory/instance planner.' \
-		'  make estimate              Estimate memory for PARAMS_B and SCHEME.' \
+		'  make estimate              Estimate memory for a model and scheme.' \
 		'  make recipe                Print the selected compression recipe.' \
-		'  make quantize-dry-run      Show the llm-compressor quantization plan.' \
-		'  make quality-eval-dry-run  Show the quality evaluation plan.' \
-		'  make benchmark-plan        Generate vLLM benchmark commands.' \
-		'  make pipeline_dev          Format, lint, test, and smoke-check the project.' \
-		'  make pipeline_article      Run article-support dry-run pipeline commands.' \
-		'  make install-compression   Install optional compression/eval packages.' \
-		'  make install-alternatives  Install optional alternative packages.' \
-		'  make install-serving       Install vLLM; use only on a supported CUDA/Linux stack.'
+		'  make list-algorithms       List compression algorithms.' \
+		'  make list-schemes          List quantization schemes.' \
+		'  make env                   Show optional ML dependency availability.' \
+		'' \
+		'  make quantize              Run llm-compressor quantization.' \
+		'  make quantize-plan         Dry-run the quantization command.' \
+		'  make serve-command         Print a vLLm serve command.' \
+		'' \
+		'  make quality-eval          Run quality evaluation.' \
+		'  make quality-eval-plan     Dry-run quality evaluation.' \
+		'' \
+		'  make serve-bench-plan      Generate vLLM benchmark command plan.' \
+		'  make gpu-bench             Run quick BF16 GPU smoke benchmark (PyTorch SDPA).' \
+		'  make gpu-bench-vllm        Run Qwen3-8B BF16 vs FP8 benchmarks on GPU.' \
+		'' \
+		'  make dev                   Format, lint, test, and smoke-check.' \
+		'  make dry-run-all           Run article-support dry-run pipeline.' \
+		'  make run ARGS="..."        Run demo.py with arbitrary CLI args.'
+
+# ── Development ──────────────────────────────────────
 
 .PHONY: venv
 venv:
-	$(UV) sync --group dev
+	uv sync --group dev
 
 .PHONY: clean
 clean:
 	rm -rf .venv .ruff_cache .pytest_cache .mypy_cache .uv-cache compression_demo/__pycache__ tests/__pycache__
 
-.PHONY: install-compression
-install-compression: venv
-	$(UV) pip install accelerate compressed-tensors datasets llmcompressor lm_eval torch 'transformers>=4.52.1'
-
-.PHONY: install-alternatives
-install-alternatives: venv
-	$(UV) pip install bitsandbytes gptqmodel peft
-
-.PHONY: install-serving
-install-serving: venv
-	$(UV) pip install vllm
-
 .PHONY: format
 format: venv
-	$(UV) run ruff format .
+	uv run ruff format .
 
 .PHONY: format-check
 format-check: venv
-	$(UV) run ruff format --check .
+	uv run ruff format --check .
 
 .PHONY: lint
 lint: venv
-	$(UV) run ruff check .
+	uv run ruff check .
 
 .PHONY: test
 test: venv
-	$(UV) run $(PYTHON) -m pytest
+	uv run python -m pytest
 
 .PHONY: smoke-html
 smoke-html: venv
-	$(UV) run $(PYTHON) $(DEMO) smoke-html
+	uv run python demo.py smoke-html
 
 .PHONY: check
 check: format-check lint test smoke-html
 
-.PHONY: run
-run: venv
-	$(UV) run $(PYTHON) $(DEMO) $(ARGS)
+# ── Install runtimes ─────────────────────────────────
 
-.PHONY: run_%
-run_%: venv
-	$(UV) run $(PYTHON) $(DEMO) $(subst _,-,$*) $(ARGS)
+.PHONY: install-compression
+install-compression:
+	uv sync --group dev --group compression
+	-uv pip uninstall torchvision torchaudio
+
+.PHONY: install-serving
+install-serving:
+	uv venv --python 3.11.11 --clear .venv-vllm
+	uv pip install --python .venv-vllm/bin/python "vllm==0.23.0"
+
+.PHONY: install-gptqmodel
+install-gptqmodel:
+	uv venv --python 3.11.11 --clear .venv-gptqmodel
+	uv pip install --python .venv-gptqmodel/bin/python "gptqmodel==7.1.0" torchvision
+
+# ── Planning tools ───────────────────────────────────
 
 .PHONY: plan
 plan: venv
-	$(UV) run $(PYTHON) $(DEMO) plan --params-b $(PARAMS_B) --goal $(GOAL) --hardware $(HARDWARE) --context $(CONTEXT) --concurrency $(CONCURRENCY)
+	uv run python demo.py plan --params-b 7 --goal fit-memory --hardware ampere --context 4096 --concurrency 4
 
 .PHONY: estimate
 estimate: venv
-	$(UV) run $(PYTHON) $(DEMO) estimate --params-b $(PARAMS_B) --scheme $(SCHEME) --context $(CONTEXT) --concurrency $(CONCURRENCY)
+	uv run python demo.py estimate --params-b 7 --scheme w4a16 --context 4096 --concurrency 4
 
 .PHONY: recipe
 recipe: venv
-	$(UV) run $(PYTHON) $(DEMO) recipe --algorithm $(ALGORITHM)
+	uv run python demo.py recipe --algorithm $(ALGORITHM)
 
-.PHONY: quantize-dry-run
-quantize-dry-run: venv
-	$(UV) run $(PYTHON) $(DEMO) quantize --algorithm $(ALGORITHM) --dry-run
+.PHONY: list-algorithms
+list-algorithms: venv
+	uv run python demo.py list-algorithms
+
+.PHONY: list-schemes
+list-schemes: venv
+	uv run python demo.py list-schemes
+
+.PHONY: env
+env: venv
+	uv run python demo.py env
+
+# ── Quantization ─────────────────────────────────────
 
 .PHONY: quantize
 quantize: venv
-	$(UV) run $(PYTHON) $(DEMO) quantize --algorithm $(ALGORITHM)
+	uv run python demo.py quantize --algorithm $(ALGORITHM) --model $(MODEL) $(ARGS)
 
-.PHONY: quality-eval-dry-run
-quality-eval-dry-run: venv
-	$(UV) run $(PYTHON) $(DEMO) quality-eval --base-model $(BASE_MODEL) --compressed-model $(COMPRESSED_MODEL) --lm-eval-task $(LM_EVAL_TASK) --dry-run
+.PHONY: quantize-plan
+quantize-plan: venv
+	uv run python demo.py quantize --algorithm $(ALGORITHM) --model $(MODEL) --dry-run
+
+# ── Quality evaluation ───────────────────────────────
 
 .PHONY: quality-eval
 quality-eval: venv
-	$(UV) run $(PYTHON) $(DEMO) quality-eval --base-model $(BASE_MODEL) --compressed-model $(COMPRESSED_MODEL) --mode all --lm-eval-task $(LM_EVAL_TASK) --output-json $(QUALITY_JSON)
+	uv run python demo.py quality-eval \
+		--base-model $(MODEL) \
+		--compressed-model $(COMPRESSED_DIR) \
+		--mode all --lm-eval-task hellaswag \
+		--output-json reports/$(_MODEL_SLUG)-$(_ALGO_SUFFIX)-quality.json
 
-.PHONY: benchmark-plan
-benchmark-plan: venv
-	$(UV) run $(PYTHON) $(DEMO) benchmark-plan --model $(BENCHMARK_MODEL) --algorithms $(BENCHMARK_ALGORITHMS) --output-json $(BENCHMARK_JSON)
+.PHONY: quality-eval-plan
+quality-eval-plan: venv
+	uv run python demo.py quality-eval \
+		--base-model $(MODEL) \
+		--compressed-model $(COMPRESSED_DIR) \
+		--lm-eval-task hellaswag --dry-run
 
-.PHONY: pipeline_dev
-pipeline_dev: format lint test smoke-html
+# ── Serving ──────────────────────────────────────────
 
-.PHONY: pipeline_article
-pipeline_article: plan quantize-dry-run quality-eval-dry-run benchmark-plan smoke-html
+.PHONY: serve-command
+serve-command: venv
+	uv run python demo.py serve-command --algorithm $(ALGORITHM)
 
-.PHONY: pipeline_quality
-pipeline_quality: quality-eval-dry-run smoke-html
+# ── Benchmarking ─────────────────────────────────────
+
+.PHONY: serve-bench-plan
+serve-bench-plan: venv
+	uv run python demo.py benchmark-plan \
+		--model $(MODEL) \
+		--algorithms gptq-w4a16,rtn-w8a16,fp8-dynamic \
+		--output-json reports/benchmark-plan.json
+
+.PHONY: gpu-bench
+gpu-bench:
+	uv run python demo.py gpu-benchmark \
+		--models Qwen/Qwen3-8B,Qwen/Qwen3-0.6B \
+		--variants bf16 --kernels sdpa,eager \
+		--max-new-tokens 32 --warmup-runs 1 --repeat-runs 1 \
+		--output-json reports/gpu-benchmark-results.json \
+		--report-html reports/gpu-benchmark-report.html
+
+.PHONY: gpu-bench-vllm
+gpu-bench-vllm:
+	env PATH="$$(pwd)/.venv-vllm/bin:$$PATH" .venv-vllm/bin/python demo.py gpu-benchmark \
+		--models Qwen/Qwen3-8B,Qwen/Qwen3-0.6B \
+		--variants bf16,fp8-dynamic,fp8-dynamic-kv --kernels vllm \
+		--max-new-tokens 32 --warmup-runs 1 --repeat-runs 1 \
+		--vllm-max-model-len 2048 --vllm-gpu-memory-utilization 0.92 \
+		--output-json reports/rtx4090-fp8-comparison.json \
+		--report-html reports/rtx4090-fp8-comparison.html
+
+# ── Pipelines ────────────────────────────────────────
+
+.PHONY: dev
+dev: format lint test smoke-html
+
+.PHONY: dry-run-all
+dry-run-all: plan quantize-plan quality-eval-plan serve-bench-plan smoke-html
+
+# ── Convenience run target ───────────────────────────
+
+.PHONY: run run_%
+run: venv
+	uv run python demo.py $(ARGS)
+
+run_%: venv
+	uv run python demo.py $(subst _,-,$*) $(ARGS)

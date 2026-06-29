@@ -29,43 +29,14 @@ MODEL_PRESETS: dict[str, ModelArchitecture] = {
         source="built-in approximate preset",
         notes=("Check the exact model config before final capacity planning.",),
     ),
-    "qwen2.5-7b": ModelArchitecture(
-        name="Qwen2.5 7B",
-        params_b=7.6,
-        layers=28,
-        hidden_size=3584,
-        kv_head_ratio=4 / 28,
-        source="built-in approximate preset",
-        notes=("Uses grouped-query attention assumptions from the common 7B family.",),
-    ),
-    "llama3-8b": ModelArchitecture(
-        name="Llama 3/3.1 8B",
-        params_b=8.0,
-        layers=32,
+    "qwen3-8b": ModelArchitecture(
+        name="Qwen3 8B",
+        params_b=8.1907,
+        layers=36,
         hidden_size=4096,
-        kv_head_ratio=0.25,
-        source="built-in approximate preset",
-        notes=("Good first pass for Llama 3-class 8B models.",),
-    ),
-    "mistral-7b": ModelArchitecture(
-        name="Mistral 7B",
-        params_b=7.2,
-        layers=32,
-        hidden_size=4096,
-        kv_head_ratio=0.25,
-        source="built-in approximate preset",
-        notes=("Good first pass for Mistral 7B-class grouped-query models.",),
-    ),
-    "mixtral-8x7b": ModelArchitecture(
-        name="Mixtral 8x7B",
-        params_b=46.7,
-        layers=32,
-        hidden_size=4096,
-        kv_head_ratio=0.25,
-        source="built-in approximate preset",
-        notes=(
-            "Uses total parameter count for memory sizing; active-parameter latency is different.",
-        ),
+        kv_head_ratio=8 / 32,
+        source="built-in preset from official Hugging Face config",
+        notes=("Causal text-generation checkpoint suitable for the text-only harness.",),
     ),
 }
 
@@ -78,15 +49,27 @@ def _first_number(config: dict[str, Any], *keys: str) -> int | None:
     return None
 
 
+def _architecture_fields(config: dict[str, Any]) -> tuple[dict[str, Any], tuple[str, ...]]:
+    text_config = config.get("text_config")
+    if isinstance(text_config, dict):
+        return text_config, ("Read language-model architecture fields from nested text_config.",)
+    return config, ()
+
+
 def architecture_from_hf_config(path: str) -> ModelArchitecture:
     """Read layer, hidden-size, and KV-head-ratio fields from a local HF config."""
 
     config_path = pathlib.Path(path)
     config = json.loads(config_path.read_text(encoding="utf-8"))
-    layers = _first_number(config, "num_hidden_layers", "n_layer", "num_layers")
-    hidden_size = _first_number(config, "hidden_size", "n_embd", "d_model")
-    attention_heads = _first_number(config, "num_attention_heads", "n_head", "num_heads")
-    kv_heads = _first_number(config, "num_key_value_heads", "n_kv_heads", "num_kv_heads")
+    architecture_config, notes = _architecture_fields(config)
+    layers = _first_number(architecture_config, "num_hidden_layers", "n_layer", "num_layers")
+    hidden_size = _first_number(architecture_config, "hidden_size", "n_embd", "d_model")
+    attention_heads = _first_number(
+        architecture_config, "num_attention_heads", "n_head", "num_heads"
+    )
+    kv_heads = _first_number(
+        architecture_config, "num_key_value_heads", "n_kv_heads", "num_kv_heads"
+    )
 
     missing = [
         name
@@ -102,13 +85,17 @@ def architecture_from_hf_config(path: str) -> ModelArchitecture:
 
     if kv_heads is None:
         kv_head_ratio = 1.0
-        notes = ("No num_key_value_heads field found; assuming full multi-head KV cache.",)
+        notes = (*notes, "No num_key_value_heads field found; assuming full multi-head KV cache.")
     else:
         kv_head_ratio = kv_heads / attention_heads
-        notes = ()
 
     return ModelArchitecture(
-        name=str(config.get("_name_or_path") or config_path.stem),
+        name=str(
+            config.get("_name_or_path")
+            or architecture_config.get("_name_or_path")
+            or config.get("model_type")
+            or config_path.stem
+        ),
         params_b=None,
         layers=layers,
         hidden_size=hidden_size,

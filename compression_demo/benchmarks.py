@@ -17,20 +17,8 @@ BENCHMARK_WARNING = (
     "driver, CUDA, vLLM, model, prompt mix, and concurrency settings."
 )
 
-_OUTPUT_SUFFIXES = {
-    "awq-w4a16": "AWQ-W4A16",
-    "bnb-nf4": "BNB-NF4",
-    "gguf-q4": "Q4_K_M.gguf",
-    "gptq-w4a16": "W4A16",
-    "gptqmodel-w4a16": "GPTQModel-W4A16",
-    "fp8-dynamic": "FP8-Dynamic",
-    "kv-cache-fp8": "FP8-Dynamic",
-}
-
 _VLLM_QUANTIZATION_FLAGS = {
-    "awq-w4a16": ("--quantization", "awq"),
     "gptq-w4a16": ("--quantization", "gptq"),
-    "gptqmodel-w4a16": ("--quantization", "gptq"),
 }
 
 
@@ -81,15 +69,6 @@ def parse_algorithm_list(value: str) -> tuple[str, ...]:
 def benchmark_model_path(*, model: str, algorithm_key: str) -> str:
     """Return the conventional benchmark model path for an algorithm."""
 
-    if algorithm_key == "bnb-nf4":
-        return model
-    if algorithm_key == "gguf-q4":
-        slug = model.rstrip("/").split("/")[-1].replace(" ", "-")
-        return f"outputs/{slug}-{_OUTPUT_SUFFIXES[algorithm_key]}"
-    if algorithm_key in _OUTPUT_SUFFIXES:
-        suffix = _OUTPUT_SUFFIXES[algorithm_key]
-        slug = model.rstrip("/").split("/")[-1].replace(" ", "-")
-        return f"outputs/{slug}-{suffix}"
     return default_output_dir(model=model, algorithm_key=algorithm_key)
 
 
@@ -105,44 +84,12 @@ def _serve_command(
     max_model_len: int,
     port: int,
 ) -> str:
-    if algorithm_key == "bnb-nf4":
-        parts = [
-            "vllm",
-            "serve",
-            model,
-            "--quantization",
-            "bitsandbytes",
-            "--load-format",
-            "bitsandbytes",
-            "--max-model-len",
-            str(max_model_len),
-        ]
-        if port != 8000:
-            parts.extend(["--port", str(port)])
-        return _quote_command(parts)
-
-    if algorithm_key == "gguf-q4":
-        parts = [
-            "vllm",
-            "serve",
-            model_path,
-            "--tokenizer",
-            model,
-            "--max-model-len",
-            str(max_model_len),
-        ]
-        if port != 8000:
-            parts.extend(["--port", str(port)])
-        return _quote_command(parts)
-
-    if algorithm_key in {"fp8-dynamic", "kv-cache-fp8"}:
+    if algorithm_key == "fp8-dynamic":
         return build_vllm_serve_command(
             algorithm_key=algorithm_key,
             model_path=model_path,
             max_model_len=max_model_len,
             port=port,
-            fp8_kv_cache=algorithm_key == "kv-cache-fp8",
-            enable_prefix_caching=algorithm_key == "kv-cache-fp8",
         )
 
     parts = [
@@ -210,38 +157,16 @@ def _quality_eval_command(*, model: str, model_path: str) -> str:
 
 
 def _hardware_notes(algorithm_key: str) -> str:
-    if algorithm_key in {"fp8-dynamic", "kv-cache-fp8"}:
+    if algorithm_key == "fp8-dynamic":
         return "Use Ada, Hopper, Blackwell, or another stack with verified FP8 kernels."
-    if algorithm_key == "gguf-q4":
-        return (
-            "Prefer llama.cpp, Ollama, or MLX for local CPU/Apple tests; "
-            "vLLM GGUF is not the default fast path."
-        )
-    if algorithm_key == "bnb-nf4":
-        return "Good experiment path; benchmark on the same GPU memory target used for deployment."
     return "Benchmark on the exact GPU family and vLLM version planned for deployment."
 
 
 def _runtime_notes(algorithm_key: str) -> str:
-    if algorithm_key == "awq-w4a16":
-        return (
-            "AWQ quality depends on calibration; speed depends on vLLM kernel "
-            "support such as Marlin."
-        )
     if algorithm_key == "gptq-w4a16":
         return "GPTQ is a checkpoint method; compare the active vLLM kernel path before promotion."
-    if algorithm_key == "bnb-nf4":
-        return (
-            "bitsandbytes is convenient for experiments, but it is not a portable "
-            "compressed-tensors export."
-        )
-    if algorithm_key == "gguf-q4":
-        return (
-            "Use the vLLM command only for compatibility checks; run local-runtime "
-            "benchmarks separately."
-        )
-    if algorithm_key in {"fp8-dynamic", "kv-cache-fp8"}:
-        return "Confirm FP8 and KV-cache flag names against the installed vLLM version."
+    if algorithm_key == "fp8-dynamic":
+        return "Confirm FP8 flag names against the installed vLLM version."
     return "Validate runtime support before treating this as a production path."
 
 
