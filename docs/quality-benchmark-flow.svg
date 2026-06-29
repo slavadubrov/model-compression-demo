@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="640" viewBox="0 0 1180 640" role="img" aria-labelledby="title desc">
+  <title id="title">Quality gates and benchmark reporting flow</title>
+  <desc id="desc">Diagram showing compressed checkpoints moving through quality evaluation gates and GPU benchmark runs before producing verdicts, JSON reports, and HTML reports with SVG charts.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#526173"/>
+    </marker>
+    <style>
+      .bg { fill: #f6f8fb; }
+      .lane { fill: #ffffff; stroke: #d5dde8; stroke-width: 2; rx: 14; }
+      .source { fill: #eef6ff; stroke: #6aa5dc; stroke-width: 2; rx: 10; }
+      .gate { fill: #f0f8f4; stroke: #6aae84; stroke-width: 2; rx: 10; }
+      .report { fill: #fff7e8; stroke: #d5a54b; stroke-width: 2; rx: 10; }
+      .warn { fill: #fff0f0; stroke: #cd7777; stroke-width: 2; rx: 10; }
+      .text { font: 14px Inter, Arial, sans-serif; fill: #1f2933; }
+      .small { font: 12px Inter, Arial, sans-serif; fill: #526173; }
+      .title { font: 700 20px Inter, Arial, sans-serif; fill: #17202a; }
+      .lane-title { font: 700 16px Inter, Arial, sans-serif; fill: #253445; }
+      .label { font: 700 13px Inter, Arial, sans-serif; fill: #253445; }
+      .arrow { stroke: #526173; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+      .dash { stroke: #8a96a3; stroke-width: 2; fill: none; stroke-dasharray: 7 5; marker-end: url(#arrow); }
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1180" height="640"/>
+  <text class="title" x="40" y="44">Quality Gates And Benchmark Reporting</text>
+  <text class="small" x="40" y="70">The repo keeps correctness checks and hardware performance measurements distinct, then records both as reproducible artifacts.</text>
+
+  <rect class="lane" x="40" y="105" width="1100" height="220"/>
+  <text class="lane-title" x="65" y="138">Quality promotion flow</text>
+
+  <rect class="source" x="65" y="165" width="170" height="88"/>
+  <text class="label" x="88" y="196">Inputs</text>
+  <text class="small" x="88" y="222">base model</text>
+  <text class="small" x="88" y="244">compressed model</text>
+
+  <rect class="gate" x="295" y="145" width="150" height="72"/>
+  <text class="label" x="318" y="176">Generation</text>
+  <text class="small" x="318" y="200">prompt comparison</text>
+
+  <rect class="gate" x="475" y="145" width="150" height="72"/>
+  <text class="label" x="498" y="176">Perplexity</text>
+  <text class="small" x="498" y="200">relative delta</text>
+
+  <rect class="gate" x="655" y="145" width="150" height="72"/>
+  <text class="label" x="678" y="176">lm_eval</text>
+  <text class="small" x="678" y="200">task regression</text>
+
+  <rect class="gate" x="835" y="145" width="150" height="72"/>
+  <text class="label" x="858" y="176">Long Context</text>
+  <text class="small" x="858" y="200">anchor retrieval</text>
+
+  <rect class="report" x="475" y="245" width="330" height="58"/>
+  <text class="label" x="500" y="277">summary.verdict: pass, fail, or needs_review</text>
+
+  <rect class="warn" x="875" y="245" width="210" height="58"/>
+  <text class="label" x="900" y="277">quality JSON</text>
+
+  <path class="arrow" d="M235 209 L295 181"/>
+  <path class="arrow" d="M445 181 L475 181"/>
+  <path class="arrow" d="M625 181 L655 181"/>
+  <path class="arrow" d="M805 181 L835 181"/>
+  <path class="arrow" d="M910 217 L780 245"/>
+  <path class="arrow" d="M805 274 L875 274"/>
+  <path class="dash" d="M370 217 L515 245"/>
+  <path class="dash" d="M550 217 L590 245"/>
+  <path class="dash" d="M730 217 L690 245"/>
+
+  <rect class="lane" x="40" y="370" width="1100" height="220"/>
+  <text class="lane-title" x="65" y="403">GPU benchmark and report flow</text>
+
+  <rect class="source" x="65" y="430" width="170" height="88"/>
+  <text class="label" x="88" y="461">Benchmark axes</text>
+  <text class="small" x="88" y="487">models, variants</text>
+  <text class="small" x="88" y="509">kernels, prompts</text>
+
+  <rect class="gate" x="295" y="420" width="170" height="108"/>
+  <text class="label" x="318" y="451">Run combinations</text>
+  <text class="small" x="318" y="477">skip unsupported pairs</text>
+  <text class="small" x="318" y="499">load model/runtime</text>
+
+  <rect class="gate" x="525" y="420" width="170" height="108"/>
+  <text class="label" x="548" y="451">Measurements</text>
+  <text class="small" x="548" y="477">load time, tok/s</text>
+  <text class="small" x="548" y="499">memory, previews</text>
+
+  <rect class="report" x="755" y="420" width="170" height="108"/>
+  <text class="label" x="778" y="451">JSON payload</text>
+  <text class="small" x="778" y="477">environment</text>
+  <text class="small" x="778" y="499">runs and summary</text>
+
+  <rect class="report" x="965" y="420" width="145" height="108"/>
+  <text class="label" x="988" y="451">HTML report</text>
+  <text class="small" x="988" y="477">tables</text>
+  <text class="small" x="988" y="499">inline SVG charts</text>
+
+  <path class="arrow" d="M235 474 L295 474"/>
+  <path class="arrow" d="M465 474 L525 474"/>
+  <path class="arrow" d="M695 474 L755 474"/>
+  <path class="arrow" d="M925 474 L965 474"/>
+  <path class="dash" d="M840 420 L760 303"/>
+  <text class="small" x="65" y="560">Reports are evidence, not universal claims. Regenerate on the target hardware, model revision, prompts, context, concurrency, driver, CUDA runtime, and serving stack.</text>
+</svg>

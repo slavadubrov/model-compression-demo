@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="720" viewBox="0 0 1180 720" role="img" aria-labelledby="title desc">
+  <title id="title">Model compression demo architecture overview</title>
+  <desc id="desc">Diagram showing CLI and Makefile entry points flowing into compression_demo modules for planning, quantization, quality evaluation, benchmarking, reports, and the standalone HTML guide.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#526173"/>
+    </marker>
+    <style>
+      .bg { fill: #f6f8fb; }
+      .panel { fill: #ffffff; stroke: #cfd8e3; stroke-width: 2; rx: 12; }
+      .core { fill: #eef6ff; stroke: #6aa5dc; stroke-width: 2; rx: 12; }
+      .runtime { fill: #f0f8f4; stroke: #68a982; stroke-width: 2; rx: 12; }
+      .artifact { fill: #fff7e8; stroke: #d5a54b; stroke-width: 2; rx: 12; }
+      .text { font: 15px Inter, Arial, sans-serif; fill: #1f2933; }
+      .small { font: 12px Inter, Arial, sans-serif; fill: #526173; }
+      .title { font: 700 20px Inter, Arial, sans-serif; fill: #17202a; }
+      .label { font: 700 14px Inter, Arial, sans-serif; fill: #253445; }
+      .arrow { stroke: #526173; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+      .dash { stroke: #8a96a3; stroke-width: 2; fill: none; stroke-dasharray: 7 5; marker-end: url(#arrow); }
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1180" height="720"/>
+  <text class="title" x="40" y="44">Model Compression Demo: Repository Architecture</text>
+  <text class="small" x="40" y="70">Dependency-light planning by default; optional ML stacks are imported only for quantization, model evaluation, and GPU benchmarks.</text>
+
+  <rect class="panel" x="40" y="110" width="210" height="116"/>
+  <text class="label" x="64" y="145">Entry Points</text>
+  <text class="text" x="64" y="174">demo.py</text>
+  <text class="text" x="64" y="198">Makefile</text>
+  <text class="text" x="64" y="222">console scripts</text>
+
+  <rect class="core" x="330" y="100" width="270" height="136"/>
+  <text class="label" x="354" y="135">compression_demo.cli</text>
+  <text class="small" x="354" y="164">argparse command router</text>
+  <text class="small" x="354" y="186">formats terminal output</text>
+  <text class="small" x="354" y="208">calls focused helper modules</text>
+
+  <rect class="core" x="700" y="90" width="190" height="82"/>
+  <text class="label" x="724" y="124">catalog.py</text>
+  <text class="small" x="724" y="150">schemes, algorithms, GPUs</text>
+
+  <rect class="core" x="940" y="90" width="190" height="82"/>
+  <text class="label" x="964" y="124">model_specs.py</text>
+  <text class="small" x="964" y="150">presets and HF configs</text>
+
+  <rect class="core" x="700" y="210" width="190" height="98"/>
+  <text class="label" x="724" y="244">planner.py</text>
+  <text class="small" x="724" y="270">weights + KV cache</text>
+  <text class="small" x="724" y="292">GPU recommendations</text>
+
+  <rect class="core" x="940" y="210" width="190" height="98"/>
+  <text class="label" x="964" y="244">recipes.py</text>
+  <text class="small" x="964" y="270">snippets, dry-runs</text>
+  <text class="small" x="964" y="292">llm-compressor runs</text>
+
+  <rect class="core" x="700" y="350" width="190" height="98"/>
+  <text class="label" x="724" y="384">evals.py</text>
+  <text class="small" x="724" y="410">quality gates</text>
+  <text class="small" x="724" y="432">pass/fail summary</text>
+
+  <rect class="core" x="940" y="350" width="190" height="98"/>
+  <text class="label" x="964" y="384">benchmarks.py</text>
+  <text class="small" x="964" y="410">vLLM command plans</text>
+  <text class="small" x="964" y="432">serve/bench/eval rows</text>
+
+  <rect class="runtime" x="700" y="500" width="430" height="110"/>
+  <text class="label" x="724" y="534">gpu_benchmarks.py</text>
+  <text class="small" x="724" y="560">Transformers and vLLM CUDA benchmark runner</text>
+  <text class="small" x="724" y="582">environment capture, JSON writer, HTML renderer</text>
+
+  <rect class="artifact" x="330" y="300" width="270" height="110"/>
+  <text class="label" x="354" y="334">Artifacts</text>
+  <text class="small" x="354" y="360">outputs/: compressed checkpoints</text>
+  <text class="small" x="354" y="382">reports/: JSON and HTML reports</text>
+  <text class="small" x="354" y="404">sparse_logs/: local run logs</text>
+
+  <rect class="artifact" x="40" y="320" width="210" height="116"/>
+  <text class="label" x="64" y="354">index.html</text>
+  <text class="small" x="64" y="380">standalone guide</text>
+  <text class="small" x="64" y="402">browser calculator</text>
+  <text class="small" x="64" y="424">article support</text>
+
+  <rect class="panel" x="40" y="510" width="560" height="110"/>
+  <text class="label" x="64" y="544">Tests and Validation</text>
+  <text class="small" x="64" y="570">pytest covers planner math, CLI behavior, recipes, eval summaries, GPU report rendering, metadata, and docs.</text>
+  <text class="small" x="64" y="594">Ruff handles formatting and lint checks. smoke-html validates the standalone HTML guide structure.</text>
+
+  <path class="arrow" d="M250 168 L330 168"/>
+  <path class="arrow" d="M600 130 L700 130"/>
+  <path class="arrow" d="M600 152 L940 130"/>
+  <path class="arrow" d="M600 178 L700 258"/>
+  <path class="arrow" d="M600 190 L940 258"/>
+  <path class="arrow" d="M600 202 L700 398"/>
+  <path class="arrow" d="M600 214 L940 398"/>
+  <path class="arrow" d="M1035 448 L1015 500"/>
+  <path class="arrow" d="M795 448 L815 500"/>
+  <path class="arrow" d="M915 610 L600 382"/>
+  <path class="dash" d="M250 378 L330 354"/>
+  <path class="dash" d="M330 566 L250 410"/>
+</svg>
