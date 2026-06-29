@@ -12,10 +12,15 @@ import html
 import importlib.metadata
 import importlib.util
 import json
+import os
 import platform
+import shutil
+import socket
 import subprocess
+import sys
 import time
 import traceback
+import urllib.request
 from collections.abc import Iterable
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
@@ -25,9 +30,11 @@ from typing import Any
 
 BYTES_PER_GIB = 1024**3
 
-DEFAULT_GPU_BENCHMARK_MODELS = ("Qwen/Qwen3-0.6B",)
-DEFAULT_GPU_BENCHMARK_VARIANTS = ("bf16", "bnb-int8", "bnb-nf4")
+DEFAULT_GPU_BENCHMARK_MODELS = ("Qwen/Qwen3-8B", "Qwen/Qwen3-0.6B")
+DEFAULT_GPU_BENCHMARK_VARIANTS = ("bf16", "fp8-dynamic", "fp8-dynamic-kv")
 DEFAULT_GPU_BENCHMARK_KERNELS = ("sdpa", "eager")
+DEFAULT_VLLM_MAX_MODEL_LEN = 2048
+DEFAULT_VLLM_GPU_MEMORY_UTILIZATION = 0.85
 DEFAULT_GPU_BENCHMARK_PROMPTS = (
     "Explain why model quantization changes memory bandwidth pressure.",
     "Give two practical checks before promoting a compressed LLM checkpoint.",
@@ -38,6 +45,8 @@ VARIANT_LABELS = {
     "fp16": "FP16 baseline",
     "bnb-int8": "bitsandbytes LLM.int8",
     "bnb-nf4": "bitsandbytes NF4 4-bit",
+    "fp8-dynamic": "vLLM dynamic FP8 W8A8",
+    "fp8-dynamic-kv": "vLLM dynamic FP8 W8A8 + FP8 KV cache",
 }
 
 KERNEL_LABELS = {
@@ -46,7 +55,11 @@ KERNEL_LABELS = {
     "sdpa-flash": "PyTorch SDPA flash forced",
     "sdpa-math": "PyTorch SDPA math forced",
     "flash-attn-2": "FlashAttention 2",
+    "vllm": "vLLM engine",
 }
+
+VLLM_VARIANTS = {"bf16", "fp16", "fp8-dynamic", "fp8-dynamic-kv"}
+TRANSFORMERS_ONLY_VARIANTS = {"bnb-int8", "bnb-nf4"}
 
 
 @dataclass(frozen=True)
@@ -115,6 +128,47 @@ def validate_gpu_benchmark_numbers(
     _validate_positive_int("repeat_runs", repeat_runs)
 
 
+def _compatible_variant_kernel(*, variant: str, kernel: str) -> bool:
+    if kernel == "vllm":
+        return variant in VLLM_VARIANTS
+    return variant not in {"fp8-dynamic", "fp8-dynamic-kv"}
+
+
+def _skipped_variant_kernel_reason(*, variant: str, kernel: str) -> str:
+    if kernel == "vllm" and variant in TRANSFORMERS_ONLY_VARIANTS:
+        return f"{variant} is a Transformers/bitsandbytes benchmark variant, not a vLLM path."
+    if variant in {"fp8-dynamic", "fp8-dynamic-kv"} and kernel != "vllm":
+        return "FP8 benchmark variants require the vLLM kernel/runtime path."
+    return "Unsupported variant/kernel combination."
+
+
+def _benchmark_combinations(
+    *,
+    models: tuple[str, ...],
+    variants: tuple[str, ...],
+    kernels: tuple[str, ...],
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    runs: list[dict[str, str]] = []
+    skipped: list[dict[str, str]] = []
+    for model in models:
+        for kernel in kernels:
+            for variant in variants:
+                payload = {"model": model, "variant": variant, "kernel": kernel}
+                if _compatible_variant_kernel(variant=variant, kernel=kernel):
+                    runs.append(payload)
+                else:
+                    skipped.append(
+                        {
+                            **payload,
+                            "reason": _skipped_variant_kernel_reason(
+                                variant=variant,
+                                kernel=kernel,
+                            ),
+                        }
+                    )
+    return runs, skipped
+
+
 def build_gpu_benchmark_plan(
     *,
     models: tuple[str, ...],
@@ -126,6 +180,8 @@ def build_gpu_benchmark_plan(
     repeat_runs: int,
     output_json: str,
     report_html: str,
+    vllm_max_model_len: int = DEFAULT_VLLM_MAX_MODEL_LEN,
+    vllm_gpu_memory_utilization: float = DEFAULT_VLLM_GPU_MEMORY_UTILIZATION,
 ) -> dict[str, Any]:
     """Return a dependency-light description of the intended GPU benchmark."""
 
@@ -134,6 +190,14 @@ def build_gpu_benchmark_plan(
         max_new_tokens=max_new_tokens,
         warmup_runs=warmup_runs,
         repeat_runs=repeat_runs,
+    )
+    _validate_positive_int("vllm_max_model_len", vllm_max_model_len)
+    if not 0 < vllm_gpu_memory_utilization <= 1:
+        raise ValueError("vllm_gpu_memory_utilization must be between 0 and 1")
+    planned_runs, skipped_runs = _benchmark_combinations(
+        models=models,
+        variants=variants,
+        kernels=kernels,
     )
     return {
         "models": list(models),
@@ -145,7 +209,10 @@ def build_gpu_benchmark_plan(
         "repeat_runs": repeat_runs,
         "output_json": output_json,
         "report_html": report_html,
-        "total_runs": len(models) * len(variants) * len(kernels),
+        "vllm_max_model_len": vllm_max_model_len,
+        "vllm_gpu_memory_utilization": vllm_gpu_memory_utilization,
+        "total_runs": len(planned_runs),
+        "skipped_runs": skipped_runs,
     }
 
 
@@ -161,7 +228,9 @@ def format_gpu_benchmark_plan(plan: dict[str, Any]) -> str:
         f"Prompts:      {len(plan['prompts'])}",
         f"New tokens:   {plan['max_new_tokens']}",
         f"Warmup/repeat:{plan['warmup_runs']} / {plan['repeat_runs']}",
+        f"vLLM max len:{plan['vllm_max_model_len']}",
         f"Total runs:   {plan['total_runs']}",
+        f"Skipped:      {len(plan['skipped_runs'])}",
         f"JSON:         {plan['output_json']}",
         f"HTML report:  {plan['report_html']}",
         "",
@@ -236,6 +305,120 @@ def collect_gpu_environment() -> dict[str, Any]:
             env["torch"] = {"error": str(exc)}
 
     return env
+
+
+def _parse_nvidia_smi_used_memory_gib(stdout: str) -> float | None:
+    values: list[float] = []
+    for line in stdout.splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        try:
+            values.append(float(text.split()[0]) / 1024)
+        except (TypeError, ValueError):
+            continue
+    if not values:
+        return None
+    return values[0]
+
+
+def _nvidia_smi_used_memory_gib(device_index: int | None = None) -> float | None:
+    command = [
+        "nvidia-smi",
+        "--query-gpu=memory.used",
+        "--format=csv,noheader,nounits",
+    ]
+    if device_index is not None:
+        command.insert(1, f"--id={device_index}")
+
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0 and device_index is not None:
+        return _nvidia_smi_used_memory_gib(None)
+    if completed.returncode != 0:
+        return None
+    return _parse_nvidia_smi_used_memory_gib(completed.stdout)
+
+
+def _positive_delta(current: float | None, baseline: float | None) -> float | None:
+    if current is None or baseline is None:
+        return None
+    delta = current - baseline
+    return delta if delta > 0 else None
+
+
+def _max_positive(*values: float | None) -> float | None:
+    positive = [value for value in values if value is not None and value > 0]
+    return max(positive) if positive else None
+
+
+def _parse_vllm_model_memory_gib(log_path: str) -> float | None:
+    """Parse 'Model loading took X GiB' from a vLLM engine log file."""
+    import re
+
+    try:
+        with open(log_path) as fh:
+            return _parse_vllm_model_memory_from_lines(fh)
+    except OSError:
+        pass
+    return None
+
+
+def _parse_vllm_model_memory_from_lines(lines: Iterable[str]) -> float | None:
+    """Parse 'Model loading took X GiB' from lines of text."""
+    import re
+
+    for line in lines:
+        m = re.search(r"Model loading took\s+([\d.]+)\s+GiB", line)
+        if m:
+            return float(m.group(1))
+    return None
+
+
+def _running_in_wsl() -> bool:
+    return "microsoft" in platform.release().lower()
+
+
+def _prepare_vllm_wsl_runtime() -> None:
+    if not _running_in_wsl():
+        return
+
+    os.environ.setdefault("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
+    if not os.environ.get("CC"):
+        compiler = shutil.which("gcc") or shutil.which("cc")
+        if compiler:
+            os.environ["CC"] = compiler
+
+
+def _allow_vllm_uva_when_probe_succeeds() -> None:
+    if not _running_in_wsl():
+        return
+
+    try:
+        import torch
+        import vllm.utils.platform_utils as platform_utils
+        from vllm.utils.torch_utils import get_accelerator_view_from_cpu_tensor
+
+        probe = torch.zeros(1, dtype=torch.int32, device="cpu", pin_memory=True)
+        get_accelerator_view_from_cpu_tensor(probe)
+        platform_utils.is_uva_available.cache_clear()
+        platform_utils.is_uva_available = lambda: True
+
+        try:
+            import vllm.v1.worker.gpu.buffer_utils as buffer_utils
+        except ImportError:
+            return
+        buffer_utils.is_uva_available = lambda: True
+    except Exception:
+        return
 
 
 def _attention_implementation(kernel: str) -> str:
@@ -318,6 +501,103 @@ def _clear_cuda() -> None:
         torch.cuda.reset_peak_memory_stats()
 
 
+def _kill_orphan_procs() -> None:
+    """Kill leftover multiprocessing children / resource-trackers holding GPU memory.
+    
+    Uses ``fuser`` to find processes touching ``/dev/nvidia*`` that are not ours,
+    then SIGKILLs them.  Falls back to scanning ``/proc`` if fuser is unavailable.
+    """
+    import signal
+
+    me = os.getpid()
+    killed: set[int] = set()
+
+    try:
+        completed = subprocess.run(
+            ["fuser", "-v", "/dev/nvidia*"],
+            capture_output=True, text=True, timeout=5,
+        )
+        for token in completed.stdout.split():
+            try:
+                pid = int(token)
+                if pid != me and pid != 1 and pid not in killed:
+                    os.kill(pid, signal.SIGKILL)
+                    killed.add(pid)
+            except (ValueError, OSError):
+                continue
+    except (OSError, FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    # Fallback: scan /proc for known vLLM resource-tracker / leftover workers.
+    if not killed:
+        try:
+            children = list(Path("/proc").glob("[0-9]*"))
+        except OSError:
+            children = []
+        for child_dir in children:
+            try:
+                pid = int(child_dir.name)
+                if pid == me or pid == 1 or pid in killed:
+                    continue
+                cmdline = (child_dir / "cmdline").read_text(errors="replace")
+                if (
+                    "multiprocessing.resource_tracker" in cmdline
+                    or "vllm.entrypoints" in cmdline
+                    or "vllm/v1/engine" in cmdline
+                ):
+                    os.kill(pid, signal.SIGKILL)
+                    killed.add(pid)
+            except (OSError, ValueError):
+                continue
+
+    if killed:
+        time.sleep(1)  # give the OS a moment to reclaim GPU memory
+
+
+def _force_cuda_cleanup() -> None:
+    """Aggressive GPU cleanup, including orphan multiprocessing children.
+
+    When vLLM's ``LLM()`` constructor fails partway through (e.g. OOM during
+    cache-block allocation), background worker processes may keep GPU memory
+    alive and poison subsequent benchmark runs.  This helper kills any
+    leftover children and forces CUDA memory release.
+    """
+
+    gc.collect()
+    if importlib.util.find_spec("torch") is not None:
+        import torch
+
+        if torch.cuda.is_available():
+            try:
+                torch.cuda.synchronize()
+            except Exception:
+                pass
+            torch.cuda.empty_cache()
+            torch.cuda.reset_peak_memory_stats()
+            try:
+                torch.cuda.ipc_collect()
+            except Exception:
+                pass
+        try:
+            if torch.distributed.is_available() and torch.distributed.is_initialized():
+                torch.distributed.destroy_process_group()
+        except Exception:
+            pass
+
+    import multiprocessing
+
+    for child in multiprocessing.active_children():
+        try:
+            child.terminate()
+        except Exception:
+            pass
+    for child in multiprocessing.active_children():
+        try:
+            child.join(timeout=5)
+        except Exception:
+            pass
+
+
 def _model_input_device(model: Any):
     for parameter in model.parameters():
         return parameter.device
@@ -380,6 +660,205 @@ def _load_model_and_tokenizer(
     raise ValueError(f"Unsupported benchmark variant: {variant}")
 
 
+def _find_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def _run_vllm_benchmark(
+    *,
+    model_name: str,
+    variant: str,
+    prompts: tuple[str, ...],
+    max_new_tokens: int,
+    warmup_runs: int,
+    repeat_runs: int,
+    trust_remote_code: bool,
+    vllm_max_model_len: int,
+    vllm_gpu_memory_utilization: float,
+    vllm_enforce_eager: bool,
+) -> GPUBenchmarkRun:
+    """Benchmark a variant by launching ``vllm serve`` as a subprocess.
+
+    Running vLLM in a subprocess guarantees the OS reclaims every byte of GPU
+    memory when the server exits — no cross-run contamination.
+    """
+
+    _prepare_vllm_wsl_runtime()
+    _force_cuda_cleanup()
+
+    import torch
+
+    device_index = torch.cuda.current_device() if torch.cuda.is_available() else None
+    baseline_used_gib = _nvidia_smi_used_memory_gib(device_index)
+
+    vllm_binary = shutil.which("vllm")
+    if vllm_binary is None:
+        raise RuntimeError("Could not find the vllm binary on PATH")
+
+    port = _find_free_port()
+
+    cmd: list[str] = [
+        sys.executable,
+        "-m",
+        "vllm.entrypoints.openai.api_server",
+        "--model",
+        model_name,
+        "--dtype",
+        "float16" if variant == "fp16" else "bfloat16",
+        "--max-model-len",
+        str(vllm_max_model_len),
+        "--gpu-memory-utilization",
+        str(vllm_gpu_memory_utilization),
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+    ]
+    if trust_remote_code:
+        cmd.append("--trust-remote-code")
+    if vllm_enforce_eager:
+        cmd.append("--enforce-eager")
+    if variant in {"fp8-dynamic", "fp8-dynamic-kv"}:
+        cmd.append("--quantization=fp8_per_block")
+    if variant == "fp8-dynamic-kv":
+        cmd.append("--kv-cache-dtype=fp8")
+
+    load_start = time.perf_counter()
+    print(f"  Starting vLLM server for {variant} on port {port} (enforce_eager={vllm_enforce_eager}) ...", flush=True)
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+    )
+
+    def _kill_server() -> None:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+                proc.wait(timeout=5)
+            except Exception:
+                pass
+        # Aggressively kill any remaining child processes (e.g. multiprocessing
+        # resource tracker or orphan EngineCore workers) that may hold GPU memory.
+        _kill_orphan_procs()
+
+    base_url = f"http://127.0.0.1:{port}"
+    health_url = f"{base_url}/health"
+
+    try:
+        deadline = time.perf_counter() + 7200
+        waited = 0
+        while time.perf_counter() < deadline:
+            # Check if the subprocess crashed
+            poll_code = proc.poll()
+            if poll_code is not None:
+                _kill_server()
+                raise RuntimeError(
+                    f"vLLM server exited with code {poll_code} before becoming healthy. "
+                    "Check the error output above."
+                )
+            try:
+                urllib.request.urlopen(health_url, timeout=5)
+                break
+            except Exception:
+                time.sleep(2)
+                waited += 2
+                if waited % 30 == 0:
+                    print(f"  Waiting for vLLM server ... ({waited}s elapsed)", flush=True)
+        else:
+            _kill_server()
+            raise RuntimeError(f"vLLM server did not become healthy within 120 min at {base_url}")
+
+        load_seconds = time.perf_counter() - load_start
+        load_used_gib = _nvidia_smi_used_memory_gib(device_index)
+        load_delta_gib = _positive_delta(load_used_gib, baseline_used_gib)
+        peak_used_gib = load_used_gib
+
+        payload = json.dumps(
+            {
+                "model": model_name,
+                "prompt": list(prompts),
+                "max_tokens": max_new_tokens,
+                "temperature": 0.0,
+            }
+        ).encode("utf-8")
+
+        completion_url = f"{base_url}/v1/completions"
+
+        def _http_generate() -> tuple[int, int, str]:
+            req = urllib.request.Request(
+                completion_url,
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=300) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+            usage = body.get("usage", {})
+            in_tokens = int(usage.get("prompt_tokens", 0))
+            out_tokens = int(usage.get("completion_tokens", 0))
+            choices = body.get("choices", [{}])
+            text = choices[0].get("text", "") if choices else ""
+            return in_tokens, out_tokens, text
+
+        for _ in range(warmup_runs):
+            _http_generate()
+            warmup_used_gib = _nvidia_smi_used_memory_gib(device_index)
+            if warmup_used_gib is not None:
+                peak_used_gib = max(peak_used_gib or warmup_used_gib, warmup_used_gib)
+
+        durations: list[float] = []
+        input_tokens = 0
+        generated_tokens = 0
+        response_preview = ""
+        for _ in range(repeat_runs):
+            start = time.perf_counter()
+            i_tok, g_tok, text = _http_generate()
+            durations.append(time.perf_counter() - start)
+            input_tokens = i_tok
+            generated_tokens = g_tok
+            response_preview = text[:400]
+            repeat_used_gib = _nvidia_smi_used_memory_gib(device_index)
+            if repeat_used_gib is not None:
+                peak_used_gib = max(peak_used_gib or repeat_used_gib, repeat_used_gib)
+
+    finally:
+        _kill_server()
+
+    peak_delta_gib = _positive_delta(peak_used_gib, baseline_used_gib)
+    model_memory_gib = _max_positive(load_delta_gib, peak_delta_gib)
+
+    _force_cuda_cleanup()
+
+    mean_seconds = sum(durations) / len(durations)
+    return GPUBenchmarkRun(
+        model=model_name,
+        variant=variant,
+        variant_label=VARIANT_LABELS[variant],
+        kernel="vllm",
+        kernel_label=KERNEL_LABELS["vllm"],
+        status="ok",
+        load_seconds=load_seconds,
+        generation_seconds_mean=mean_seconds,
+        generation_seconds_min=min(durations),
+        generated_tokens_per_second=generated_tokens / mean_seconds,
+        input_tokens=input_tokens,
+        generated_tokens=generated_tokens,
+        model_memory_gib=model_memory_gib,
+        peak_allocated_gib=peak_delta_gib,
+        peak_reserved_gib=peak_delta_gib,
+        response_preview=response_preview,
+    )
+
+
 def _generate_once(
     *,
     model: Any,
@@ -415,6 +894,9 @@ def run_single_gpu_benchmark(
     warmup_runs: int,
     repeat_runs: int,
     trust_remote_code: bool = False,
+    vllm_max_model_len: int = DEFAULT_VLLM_MAX_MODEL_LEN,
+    vllm_gpu_memory_utilization: float = DEFAULT_VLLM_GPU_MEMORY_UTILIZATION,
+    vllm_enforce_eager: bool = False,
 ) -> GPUBenchmarkRun:
     """Run one model/variant/kernel benchmark and return a structured result."""
 
@@ -434,7 +916,31 @@ def run_single_gpu_benchmark(
         status="failed",
     )
     try:
+        if not _compatible_variant_kernel(variant=variant, kernel=kernel):
+            return GPUBenchmarkRun(
+                **{
+                    **asdict(label),
+                    "status": "skipped",
+                    "error": _skipped_variant_kernel_reason(variant=variant, kernel=kernel),
+                }
+            )
         _require_cuda_stack()
+        if kernel == "vllm":
+            if importlib.util.find_spec("vllm") is None:
+                raise RuntimeError("vLLM is not installed.")
+            return _run_vllm_benchmark(
+                model_name=model_name,
+                variant=variant,
+                prompts=prompts,
+                max_new_tokens=max_new_tokens,
+                warmup_runs=warmup_runs,
+                repeat_runs=repeat_runs,
+                trust_remote_code=trust_remote_code,
+                vllm_max_model_len=vllm_max_model_len,
+                vllm_gpu_memory_utilization=vllm_gpu_memory_utilization,
+                vllm_enforce_eager=vllm_enforce_eager,
+            )
+
         import torch
 
         _clear_cuda()
@@ -505,7 +1011,7 @@ def run_single_gpu_benchmark(
             response_preview=response_preview,
         )
     except Exception as exc:  # pragma: no cover - exercised by real GPU runs
-        _clear_cuda()
+        _force_cuda_cleanup() if kernel == "vllm" else _clear_cuda()
         return GPUBenchmarkRun(
             **{
                 **asdict(label),
@@ -514,23 +1020,28 @@ def run_single_gpu_benchmark(
         )
 
 
+def _memory_basis_gib(run: GPUBenchmarkRun) -> float | None:
+    if run.model_memory_gib and run.model_memory_gib > 0:
+        return run.model_memory_gib
+    if run.peak_allocated_gib and run.peak_allocated_gib > 0:
+        return run.peak_allocated_gib
+    return None
+
+
 def _apply_compression_ratios(runs: list[GPUBenchmarkRun]) -> list[GPUBenchmarkRun]:
     baselines: dict[tuple[str, str], float] = {}
     for run in runs:
-        if (
-            run.status == "ok"
-            and run.variant == "bf16"
-            and run.model_memory_gib
-            and run.model_memory_gib > 0
-        ):
-            baselines[(run.model, run.kernel)] = run.model_memory_gib
+        baseline = _memory_basis_gib(run)
+        if run.status == "ok" and run.variant == "bf16" and baseline:
+            baselines[(run.model, run.kernel)] = baseline
 
     updated = []
     for run in runs:
         ratio = None
         baseline = baselines.get((run.model, run.kernel))
-        if baseline and run.model_memory_gib and run.model_memory_gib > 0:
-            ratio = baseline / run.model_memory_gib
+        current = _memory_basis_gib(run)
+        if baseline and current:
+            ratio = baseline / current
         updated.append(
             GPUBenchmarkRun(
                 **{
@@ -575,6 +1086,9 @@ def run_gpu_benchmarks(
     report_html: str,
     trust_remote_code: bool = False,
     fail_fast: bool = False,
+    vllm_max_model_len: int = DEFAULT_VLLM_MAX_MODEL_LEN,
+    vllm_gpu_memory_utilization: float = DEFAULT_VLLM_GPU_MEMORY_UTILIZATION,
+    vllm_enforce_eager: bool = False,
 ) -> dict[str, Any]:
     """Run all GPU benchmarks, writing JSON and HTML progress as each run finishes."""
 
@@ -588,30 +1102,51 @@ def run_gpu_benchmarks(
         repeat_runs=repeat_runs,
         output_json=output_json,
         report_html=report_html,
+        vllm_max_model_len=vllm_max_model_len,
+        vllm_gpu_memory_utilization=vllm_gpu_memory_utilization,
     )
     environment = collect_gpu_environment()
     runs: list[GPUBenchmarkRun] = []
+    planned_runs, skipped_runs = _benchmark_combinations(
+        models=models,
+        variants=variants,
+        kernels=kernels,
+    )
 
-    for model in models:
-        for kernel in kernels:
-            for variant in variants:
-                run = run_single_gpu_benchmark(
-                    model_name=model,
-                    variant=variant,
-                    kernel=kernel,
-                    prompts=prompts,
-                    max_new_tokens=max_new_tokens,
-                    warmup_runs=warmup_runs,
-                    repeat_runs=repeat_runs,
-                    trust_remote_code=trust_remote_code,
-                )
-                runs.append(run)
-                runs = _apply_compression_ratios(runs)
-                payload = _result_payload(environment=environment, config=config, runs=runs)
-                write_gpu_benchmark_json(payload, output_json)
-                write_gpu_benchmark_report(payload, report_html)
-                if fail_fast and run.status != "ok":
-                    return payload
+    for skipped in skipped_runs:
+        runs.append(
+            GPUBenchmarkRun(
+                model=skipped["model"],
+                variant=skipped["variant"],
+                variant_label=VARIANT_LABELS[skipped["variant"]],
+                kernel=skipped["kernel"],
+                kernel_label=KERNEL_LABELS[skipped["kernel"]],
+                status="skipped",
+                error=skipped["reason"],
+            )
+        )
+
+    for planned in planned_runs:
+        run = run_single_gpu_benchmark(
+            model_name=planned["model"],
+            variant=planned["variant"],
+            kernel=planned["kernel"],
+            prompts=prompts,
+            max_new_tokens=max_new_tokens,
+            warmup_runs=warmup_runs,
+            repeat_runs=repeat_runs,
+            trust_remote_code=trust_remote_code,
+            vllm_max_model_len=vllm_max_model_len,
+            vllm_gpu_memory_utilization=vllm_gpu_memory_utilization,
+            vllm_enforce_eager=vllm_enforce_eager,
+        )
+        runs.append(run)
+        runs = _apply_compression_ratios(runs)
+        payload = _result_payload(environment=environment, config=config, runs=runs)
+        write_gpu_benchmark_json(payload, output_json)
+        write_gpu_benchmark_report(payload, report_html)
+        if fail_fast and run.status not in {"ok", "skipped"}:
+            return payload
 
     payload = _result_payload(environment=environment, config=config, runs=runs)
     write_gpu_benchmark_json(payload, output_json)
@@ -619,17 +1154,26 @@ def run_gpu_benchmarks(
     return payload
 
 
+def _summary_run(run: GPUBenchmarkRun | None) -> dict[str, Any] | None:
+    if run is None:
+        return None
+    payload = asdict(run)
+    payload["memory_basis_gib"] = _memory_basis_gib(run)
+    return payload
+
+
 def summarize_gpu_benchmark_results(runs: list[GPUBenchmarkRun]) -> dict[str, Any]:
     ok_runs = [run for run in runs if run.status == "ok"]
-    failed_runs = [run for run in runs if run.status != "ok"]
+    skipped_runs = [run for run in runs if run.status == "skipped"]
+    failed_runs = [run for run in runs if run.status not in {"ok", "skipped"}]
     fastest = max(
         ok_runs,
         key=lambda run: run.generated_tokens_per_second or 0,
         default=None,
     )
     lowest_memory = min(
-        (run for run in ok_runs if run.peak_allocated_gib is not None),
-        key=lambda run: run.peak_allocated_gib or float("inf"),
+        (run for run in ok_runs if _memory_basis_gib(run)),
+        key=lambda run: _memory_basis_gib(run) or float("inf"),
         default=None,
     )
     best_compression = max(
@@ -640,10 +1184,11 @@ def summarize_gpu_benchmark_results(runs: list[GPUBenchmarkRun]) -> dict[str, An
     return {
         "total_runs": len(runs),
         "ok_runs": len(ok_runs),
+        "skipped_runs": len(skipped_runs),
         "failed_runs": len(failed_runs),
-        "fastest": asdict(fastest) if fastest else None,
-        "lowest_memory": asdict(lowest_memory) if lowest_memory else None,
-        "best_compression": asdict(best_compression) if best_compression else None,
+        "fastest": _summary_run(fastest),
+        "lowest_memory": _summary_run(lowest_memory),
+        "best_compression": _summary_run(best_compression),
     }
 
 
@@ -652,7 +1197,9 @@ def format_gpu_benchmark_summary(payload: dict[str, Any]) -> str:
     lines = [
         "GPU benchmark summary",
         "---------------------",
-        f"Runs:       {summary['ok_runs']} ok / {summary['failed_runs']} failed",
+        "Runs:       "
+        f"{summary['ok_runs']} ok / {summary['skipped_runs']} skipped / "
+        f"{summary['failed_runs']} failed",
     ]
     fastest = summary.get("fastest")
     if fastest:
@@ -663,11 +1210,13 @@ def format_gpu_benchmark_summary(payload: dict[str, Any]) -> str:
         )
     lowest = summary.get("lowest_memory")
     if lowest:
-        lines.append(
-            "Lowest mem: "
-            f"{lowest['model']} {lowest['variant']} {lowest['kernel']} "
-            f"at {lowest['peak_allocated_gib']:.2f} GiB peak allocated"
-        )
+        memory_gib = lowest.get("memory_basis_gib") or lowest.get("peak_allocated_gib")
+        if memory_gib:
+            lines.append(
+                "Lowest mem: "
+                f"{lowest['model']} {lowest['variant']} {lowest['kernel']} "
+                f"at {memory_gib:.2f} GiB"
+            )
     best = summary.get("best_compression")
     if best and best.get("compression_ratio_vs_bf16"):
         lines.append(
@@ -686,6 +1235,14 @@ def _short_model(model: str) -> str:
 
 def _run_label(run: dict[str, Any]) -> str:
     return f"{_short_model(run['model'])} / {run['variant']} / {run['kernel']}"
+
+
+def _report_memory_gib(row: dict[str, Any]) -> float | None:
+    for key in ("peak_allocated_gib", "model_memory_gib", "peak_reserved_gib"):
+        value = row.get(key)
+        if isinstance(value, int | float) and value > 0:
+            return float(value)
+    return None
 
 
 def _fmt(value: Any, digits: int = 2, suffix: str = "") -> str:
@@ -743,6 +1300,111 @@ def _bar_chart(
     )
 
 
+def _numeric(value: Any) -> float | None:
+    if isinstance(value, int | float):
+        return float(value)
+    return None
+
+
+def _best_fp8_speedup(rows: list[dict[str, Any]]) -> tuple[dict[str, Any], float] | None:
+    bf16_by_model_kernel: dict[tuple[Any, Any], float] = {}
+    for row in rows:
+        throughput = _numeric(row.get("generated_tokens_per_second"))
+        if row.get("status") == "ok" and row.get("variant") == "bf16" and throughput:
+            bf16_by_model_kernel[(row.get("model"), row.get("kernel"))] = throughput
+
+    comparisons: list[tuple[dict[str, Any], float]] = []
+    for row in rows:
+        variant = str(row.get("variant", ""))
+        throughput = _numeric(row.get("generated_tokens_per_second"))
+        baseline = bf16_by_model_kernel.get((row.get("model"), row.get("kernel")))
+        if row.get("status") == "ok" and variant.startswith("fp8") and throughput and baseline:
+            comparisons.append((row, throughput / baseline))
+
+    return max(comparisons, key=lambda item: item[1], default=None)
+
+
+def _report_conclusions(payload: dict[str, Any]) -> str:
+    rows = payload.get("runs", [])
+    summary = payload.get("summary", {})
+    config = payload.get("config", {})
+    models = ", ".join(str(model) for model in config.get("models", [])) or "the selected model"
+    variants = (
+        ", ".join(str(variant) for variant in config.get("variants", [])) or "selected variants"
+    )
+    kernels = ", ".join(str(kernel) for kernel in config.get("kernels", [])) or "selected kernels"
+
+    items = [
+        "This report is self-contained for "
+        f"{html.escape(models)} across {html.escape(variants)} on {html.escape(kernels)}."
+    ]
+
+    fastest = summary.get("fastest") or {}
+    if fastest:
+        items.append(
+            "Fastest completed run: "
+            f"{html.escape(_run_label(fastest))} at "
+            f"{html.escape(_fmt(fastest.get('generated_tokens_per_second'), suffix=' tok/s'))}."
+        )
+    else:
+        items.append("No completed run is available yet; inspect failed/skipped rows below.")
+
+    fp8_speedup = _best_fp8_speedup(rows)
+    if fp8_speedup:
+        row, speedup = fp8_speedup
+        items.append(
+            "Best FP8 throughput comparison: "
+            f"{html.escape(_run_label(row))} measured {speedup:.2f}x the BF16 "
+            "throughput for the same model and kernel."
+        )
+    elif any(str(row.get("variant", "")).startswith("fp8") for row in rows):
+        items.append(
+            "FP8 variants were included, but no successful BF16/FP8 pair was available "
+            "for a direct speedup calculation."
+        )
+
+    failed_runs = int(summary.get("failed_runs") or 0)
+    skipped_runs = int(summary.get("skipped_runs") or 0)
+    if failed_runs or skipped_runs:
+        items.append(
+            f"Run status: {failed_runs} failed and {skipped_runs} skipped; the Measurements "
+            "table keeps the first error line beside each run."
+        )
+
+    vllm_memory_missing = any(
+        row.get("status") == "ok"
+        and row.get("kernel") == "vllm"
+        and row.get("peak_allocated_gib") is None
+        for row in rows
+    )
+    vllm_memory_present = any(
+        row.get("status") == "ok"
+        and row.get("kernel") == "vllm"
+        and (
+            row.get("peak_allocated_gib") is not None
+            or row.get("model_memory_gib") is not None
+            or row.get("peak_reserved_gib") is not None
+        )
+        for row in rows
+    )
+    if vllm_memory_present:
+        items.append(
+            "For vLLM rows, memory falls back to an nvidia-smi used-memory delta when "
+            "torch CUDA allocator counters do not see the engine process."
+        )
+    elif vllm_memory_missing:
+        items.append(
+            "vLLM memory cells are blank because neither torch CUDA counters nor the "
+            "nvidia-smi fallback returned a usable allocation delta."
+        )
+
+    return (
+        '<section><h2>Conclusions</h2><ul class="conclusions">'
+        + "".join(f"<li>{item}</li>" for item in items)
+        + "</ul></section>"
+    )
+
+
 def write_gpu_benchmark_report(payload: dict[str, Any], report_html: str) -> None:
     """Write a self-contained HTML report with tables and SVG plots."""
 
@@ -764,7 +1426,7 @@ def write_gpu_benchmark_report(payload: dict[str, Any], report_html: str) -> Non
             f"<td>{html.escape(str(row.get('kernel')))}</td>"
             f"<td>{html.escape(str(row.get('status')))}</td>"
             f"<td>{_fmt(row.get('generated_tokens_per_second'))}</td>"
-            f"<td>{_fmt(row.get('peak_allocated_gib'))}</td>"
+            f"<td>{_fmt(_report_memory_gib(row))}</td>"
             f"<td>{_fmt(row.get('model_memory_gib'))}</td>"
             f"<td>{_fmt(row.get('compression_ratio_vs_bf16'), suffix='x')}</td>"
             f"<td><code>{html.escape(error.splitlines()[0] if error else '')}</code></td>"
@@ -776,7 +1438,7 @@ def write_gpu_benchmark_report(payload: dict[str, Any], report_html: str) -> Non
     best = summary.get("best_compression") or {}
     highlights = [
         ("Fastest", fastest, "generated_tokens_per_second", " tok/s"),
-        ("Lowest peak memory", lowest, "peak_allocated_gib", " GiB"),
+        ("Lowest memory", lowest, "memory_basis_gib", " GiB"),
         ("Best compression", best, "compression_ratio_vs_bf16", "x"),
     ]
     highlight_cards = []
@@ -823,6 +1485,8 @@ def write_gpu_benchmark_report(payload: dict[str, Any], report_html: str) -> Non
       padding: 16px;
     }
     article strong { display: block; margin-top: 12px; font-size: 24px; }
+    .conclusions { margin: 0; padding-left: 20px; }
+    .conclusions li { margin: 9px 0; }
     table { width: 100%; border-collapse: collapse; font-size: 14px; }
     th, td {
       padding: 10px 9px;
@@ -849,15 +1513,17 @@ def write_gpu_benchmark_report(payload: dict[str, Any], report_html: str) -> Non
     torch_version = html.escape(str(torch_env.get("version", "unknown")))
     compute = html.escape(str(torch_env.get("compute_capability", "unknown")))
     highlight_html = "".join(highlight_cards) or "<p>No completed runs yet.</p>"
+    conclusions_html = _report_conclusions(payload)
+    chart_rows = [{**row, "report_memory_gib": _report_memory_gib(row)} for row in ok_rows]
     throughput_chart = _bar_chart(
-        rows=ok_rows,
+        rows=chart_rows,
         metric="generated_tokens_per_second",
         title="Generation Throughput",
         unit=" tok/s",
     )
     memory_chart = _bar_chart(
-        rows=ok_rows,
-        metric="peak_allocated_gib",
+        rows=chart_rows,
+        metric="report_memory_gib",
         title="Peak Allocated GPU Memory",
         unit=" GiB",
         lower_is_better=True,
@@ -865,7 +1531,7 @@ def write_gpu_benchmark_report(payload: dict[str, Any], report_html: str) -> Non
     compression_chart = _bar_chart(
         rows=ok_rows,
         metric="compression_ratio_vs_bf16",
-        title="Compression Ratio vs BF16 Model Footprint",
+        title="Compression Ratio vs BF16 Memory Footprint",
         unit="x",
     )
 
@@ -892,6 +1558,7 @@ def write_gpu_benchmark_report(payload: dict[str, Any], report_html: str) -> Non
         <div><strong>CUDA runtime</strong><p>{cuda}</p></div>
       </div>
     </section>
+    {conclusions_html}
     <section>
       <h2>Highlights</h2>
       <div class="grid">{highlight_html}</div>

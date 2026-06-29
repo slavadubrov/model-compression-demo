@@ -29,22 +29,39 @@ installed.
 
 ## Quick start
 
-Architecture notes and code diagrams live in [`docs/architecture.md`](docs/architecture.md). Checked-in report fixture provenance is documented in [`docs/reports.md`](docs/reports.md).
-
-From this directory:
+Architecture notes and code diagrams live in [`docs/architecture.md`](docs/architecture.md).
+Checked-in report fixture provenance is documented in [`docs/reports.md`](docs/reports.md).
 
 ```bash
+# List available algorithms and schemes
 uv run python demo.py list-algorithms
+uv run python demo.py list-schemes
+
+# Print a compression recipe
 uv run python demo.py recipe --algorithm gptq-w4a16
-uv run python demo.py estimate --model-preset llama3-8b --scheme w4a16 --context 4096 --concurrency 4
-uv run python demo.py plan --model-preset llama3-8b --goal fit-memory --hardware ampere --context 4096 --concurrency 4
-uv run python demo.py plan --model-preset llama3-8b --goal fit-memory --hardware apple
+uv run python demo.py recipe --algorithm fp8-dynamic
+
+# Estimate GPU memory for a configuration
+uv run python demo.py estimate \
+  --model-preset qwen3-8b --scheme w4a16 --context 4096 --concurrency 4
+
+# Run the memory/instance planner
+uv run python demo.py plan \
+  --model-preset qwen3-8b --goal fit-memory --hardware ampere --context 4096 --concurrency 4
+
+# Dry-run quantization (no GPU needed)
 uv run python demo.py quantize --dry-run
-uv run python demo.py quantize --calibration-file examples/representative_calibration.jsonl --dry-run
+uv run python demo.py quantize --algorithm fp8-dynamic --model Qwen/Qwen3-8B --dry-run
+
+# Print a vLLM serve command
 uv run python demo.py serve-command --algorithm fp8-dynamic --fp8-kv-cache --enable-prefix-caching
-uv run python demo.py benchmark-plan --algorithms gptq-w4a16,awq-w4a16,bnb-nf4,gguf-q4
-uv run python demo.py gpu-benchmark --dry-run
-uv run python demo.py quality-eval --base-model Qwen/Qwen3-0.6B --compressed-model outputs/Qwen3-0.6B-W4A16 --dry-run
+
+# Generate reproducible vLLM benchmark commands
+uv run python demo.py benchmark-plan \
+  --model Qwen/Qwen3-8B \
+  --algorithms gptq-w4a16,rtn-w8a16,fp8-dynamic
+
+# Run tests
 uv run pytest
 ```
 
@@ -61,223 +78,229 @@ uv run --project compression/model-compression-demo python demo.py plan \
 
 Open `index.html` in a browser for the guide and calculator.
 
-## Makefile recipes
+## GPU benchmarking
 
-The project includes a Makefile for the common local workflows:
+The `gpu-benchmark` command runs local CUDA generation tests and writes both
+machine-readable JSON and a self-contained HTML report with conclusions, tables,
+and SVG plots. It compares BF16 baseline against FP8 dynamic quantization via
+vLLM, measuring throughput, memory, and compression ratio.
+
+The default models are `Qwen/Qwen3-8B` (primary) and `Qwen/Qwen3-0.6B` (small
+comparison). Default variants are `bf16`, `fp8-dynamic` (W8A8 block-wise FP8),
+and `fp8-dynamic-kv` (W8A8 + FP8 KV cache).
+
+### Prerequisites
 
 ```bash
-make venv
-make format
-make lint
-make test
-make smoke-html
-make check
-make clean
-make pipeline_dev
-make pipeline_article
-make gpu-benchmark
+# Install vLLM in an isolated venv (required)
+make install-serving
 ```
 
-Available recipes:
+### Running benchmarks
 
-- `make help`: list available recipes.
-- `make venv`: run `uv sync --group dev`.
-- `make format`: apply Ruff formatting.
-- `make format-check`: verify Ruff formatting without editing files.
-- `make lint`: run Ruff lint checks.
-- `make test`: run the pytest suite.
-- `make smoke-html`: validate the HTML guide structure.
-- `make check`: run `format-check`, `lint`, `test`, and `smoke-html`.
-- `make clean`: remove the local `.venv` and generated caches.
-- `make run ARGS="..."`: run arbitrary `demo.py` CLI arguments.
-- `make run_<command> ARGS="..."`: run a named `demo.py` command; underscores
-  become hyphens, so `make run_quality_eval ARGS="--help"` runs
-  `demo.py quality-eval --help`.
-- `make plan`: run the memory and instance planner.
-- `make estimate`: estimate memory for `PARAMS_B` and `SCHEME`.
-- `make recipe`: print the selected compression recipe.
-- `make quantize-dry-run`: show the `llm-compressor` quantization plan.
-- `make quality-eval-dry-run`: show the quality evaluation plan.
-- `make benchmark-plan`: generate vLLM benchmark commands and write JSON.
-- `make gpu-benchmark`: run local CUDA generation benchmarks and write JSON plus
-  `reports/gpu-benchmark-report.html` with SVG plots.
-- `make pipeline_dev`: format, lint, test, and smoke-check the project.
-- `make pipeline_article`: run the article-support dry-run pipeline commands.
-- `make pipeline_quality`: run quality-eval dry-run plus HTML smoke check.
-- `make install-compression`: install the pinned llm-compressor-compatible
-  compression/eval packages in `.venv`.
-- `make install-alternatives`: install same-environment alternatives such as
-  bitsandbytes and PEFT.
-- `make install-serving`: install `vllm` into `SERVING_ENV` because current vLLM
-  and llm-compressor releases require incompatible dependency stacks.
-- `make install-gptqmodel`: install GPTQModel into `GPTQMODEL_ENV` for the same
-  dependency-isolation reason.
-
-Most recipes accept variables. Examples:
+**Quick smoke test** on a GPU with ≥ 8 GiB VRAM (BF16 only, PyTorch SDPA):
 
 ```bash
-make plan PARAMS_B=13 HARDWARE=hopper CONTEXT=8192 CONCURRENCY=8
-make recipe ALGORITHM=fp8-dynamic
-make quality-eval-dry-run \
-  BASE_MODEL=Qwen/Qwen3-0.6B \
-  COMPRESSED_MODEL=outputs/Qwen3-0.6B-W4A16
-make benchmark-plan \
-  BENCHMARK_MODEL=Qwen/Qwen2.5-32B-Instruct \
-  BENCHMARK_ALGORITHMS=gptq-w4a16,awq-w4a16,bnb-nf4,gguf-q4
-make gpu-benchmark \
-  GPU_BENCHMARK_MODELS=Qwen/Qwen3-0.6B \
-  GPU_BENCHMARK_VARIANTS=bf16,bnb-int8,bnb-nf4 \
-  GPU_BENCHMARK_KERNELS=sdpa,eager
-make run_plan ARGS="--params-b 7 --goal throughput --hardware hopper"
+make gpu-bench
 ```
 
-## Local GPU benchmark report
+This benchmarks `Qwen3-8B` and `Qwen3-0.6B` with BF16 only. Expect ~15 min for
+the first run (model download) and ~3 min for subsequent runs.
 
-The `gpu-benchmark` command runs small-model generation tests on the local CUDA
-runtime and writes both machine-readable JSON and a self-contained HTML report
-with SVG plots. It compares model variants such as BF16, bitsandbytes INT8, and
-bitsandbytes NF4 across attention kernel modes such as PyTorch SDPA and eager
-attention.
+**Full FP8 benchmark** (vLLM, requires ≥ 24 GiB GPU, e.g., RTX 4090):
 
 ```bash
-make install-compression
+make gpu-bench-vllm
+```
+
+This benchmarks `Qwen/Qwen3-8B` with `bf16`, `fp8-dynamic`, and
+`fp8-dynamic-kv` through vLLM's serving engine. Writes results to
+`reports/rtx4090-qwen3-8b-fp8.json` and
+`reports/rtx4090-qwen3-8b-fp8.html`.
+
+**Compare two model sizes** (8B vs 0.6B):
+
+```bash
 uv run python demo.py gpu-benchmark \
-  --models Qwen/Qwen3-0.6B \
-  --variants bf16,bnb-int8,bnb-nf4 \
-  --kernels sdpa,eager \
-  --output-json reports/gpu-benchmark-results.json \
-  --report-html reports/gpu-benchmark-report.html
+  --models Qwen/Qwen3-8B,Qwen/Qwen3-0.6B \
+  --variants bf16,fp8-dynamic,fp8-dynamic-kv \
+  --kernels vllm \
+  --max-new-tokens 64 \
+  --warmup-runs 1 \
+  --repeat-runs 3 \
+  --vllm-max-model-len 2048 \
+  --vllm-gpu-memory-utilization 0.92 \
+  --output-json reports/comparison.json \
+  --report-html reports/comparison.html
 ```
 
-Use the generated report as a workstation smoke benchmark, not as a production
-serving benchmark. For endpoint throughput, still use `benchmark-plan` and run
-vLLM's serving benchmark against the exact deployed checkpoint and runtime.
-
-## Full llm-compressor quantization path
-
-Use this only in a CUDA-capable environment with enough disk, CPU memory, and GPU
-memory:
+**Custom benchmark** (any model, any configuration):
 
 ```bash
+uv run python demo.py gpu-benchmark \
+  --models meta-llama/Llama-3.1-8B \
+  --variants bf16,fp8-dynamic \
+  --kernels vllm \
+  --max-new-tokens 128 \
+  --warmup-runs 2 \
+  --repeat-runs 5 \
+  --vllm-max-model-len 4096 \
+  --vllm-gpu-memory-utilization 0.85 \
+  --output-json reports/llama3-fp8.json
+```
+
+**Preview the plan** (no GPU needed):
+
+```bash
+uv run python demo.py gpu-benchmark --dry-run
+```
+
+### Interpreting results
+
+The HTML report includes:
+
+- **Throughput table**: token/s per variant, with BF16 baseline.
+- **Memory table**: GPU memory per variant.
+- **Compression ratio**: BF16 memory ÷ variant memory.
+- **SVG plots**: speed and memory comparisons.
+
+The JSON output contains the full run data for further analysis.
+
+> **Note on memory measurement**: The benchmark measures GPU memory via
+> `nvidia-smi`, which includes both model weights and vLLM's KV cache pool.
+> With high `--vllm-gpu-memory-utilization` (default 0.85), the KV cache fills
+> the remaining GPU space, making total memory look similar across variants.
+> The actual model weight memory for FP8 (~9 GiB) is substantially lower than
+> BF16 (~15 GiB) for an 8B model.
+
+## Model compression (quantization)
+
+### Installation
+
+Install the compression packages in the project venv. Keep vLLM in its own
+isolated environment (`make install-serving`) — current vLLM and llm-compressor
+releases require incompatible dependency stacks.
+
+```bash
+# Install llm-compressor and dependencies
 make install-compression
 
-# Current vLLM and GPTQModel releases use dependency stacks that conflict with
-# llm-compressor 0.6.0.1. Keep them isolated when you need those workflows:
-make install-serving SERVING_ENV=.venv-vllm
-make install-gptqmodel GPTQMODEL_ENV=.venv-gptqmodel
+# Install vLLM in a separate venv (for serving after compression)
+make install-serving
+```
 
+### Quick compression (dry-run first)
+
+Preview the command without running it:
+
+```bash
 uv run python demo.py quantize \
   --algorithm gptq-w4a16 \
-  --model Qwen/Qwen3-0.6B \
-  --output-dir outputs/Qwen3-0.6B-W4A16 \
+  --model Qwen/Qwen3-8B \
+  --dry-run
+```
+
+### Full compression run
+
+```bash
+uv run python demo.py quantize \
+  --algorithm gptq-w4a16 \
+  --model Qwen/Qwen3-8B \
+  --output-dir outputs/Qwen3-8B-W4A16 \
   --calibration-file examples/representative_calibration.jsonl \
   --text-column text \
   --num-calibration-samples 256 \
   --max-seq-length 4096
 ```
 
-For a smoke test, leaving out `--calibration-file` uses WikiText. For a real
-checkpoint, pass a JSONL or text file that looks like production traffic:
+For a smoke test, omit `--calibration-file` to use WikiText. For a real
+checkpoint, pass a JSONL or text file that matches production traffic:
 
 ```bash
 uv run python demo.py quantize \
-  --algorithm gptq-w4a16 \
-  --model Qwen/Qwen3-0.6B \
+  --algorithm fp8-dynamic \
+  --model Qwen/Qwen3-8B \
+  --output-dir outputs/Qwen3-8B-FP8-Dynamic \
   --calibration-file traces/rag_queries.jsonl \
   --text-column text
 ```
 
-Good calibration sources include SQL assistant prompts, RAG traces, chat logs,
-support conversations, internal coding prompts, or any corpus that matches the
-shape and vocabulary of the deployed workload. Keep sensitive data out of the
-file or redact it before using it for calibration.
+### Supported compression algorithms
 
-Reference GPTQ recipe:
+| Algorithm | Package | Scheme | Output format |
+|-----------|---------|--------|---------------|
+| `gptq-w4a16` | llm-compressor | GPTQ W4A16 | compressed-tensors |
+| `rtn-w8a16` | llm-compressor | RTN W8A16 | compressed-tensors |
+| `fp8-dynamic` | llm-compressor | FP8 Dynamic W8A8 | compressed-tensors |
 
-```python
-import json
+List all available:
 
-from datasets import Dataset
-from llmcompressor import oneshot
-from llmcompressor.modifiers.quantization import GPTQModifier
-
-with open("examples/representative_calibration.jsonl", encoding="utf-8") as handle:
-    rows = [json.loads(line) for line in handle if line.strip()]
-
-recipe = GPTQModifier(
-    scheme="W4A16",
-    targets="Linear",
-    ignore=["lm_head"],
-)
-
-oneshot(
-    model="Qwen/Qwen3-0.6B",
-    dataset=Dataset.from_list(rows),
-    recipe=recipe,
-    output_dir="outputs/Qwen3-0.6B-W4A16",
-    max_seq_length=4096,
-    num_calibration_samples=len(rows),
-)
+```bash
+uv run python demo.py list-algorithms
 ```
 
-## Quality evaluation workflow
+### Serving after compression
 
-The guide recommends validating compression with generation samples,
-perplexity, task metrics, and long-context behavior. The `quality-eval` command
-implements that workflow:
+Generate a vLLM serve command for the compressed checkpoint:
+
+```bash
+uv run python demo.py serve-command \
+  --algorithm gptq-w4a16 \
+  --model-path outputs/Qwen3-8B-W4A16 \
+  --tensor-parallel-size 1 \
+  --port 8000 \
+  --enable-prefix-caching
+```
+
+The output is a ready-to-run shell command:
+
+```bash
+vllm serve outputs/Qwen3-8B-W4A16 --max-model-len 4096
+```
+
+### Quality evaluation
+
+After compression, validate the checkpoint before promoting to production:
 
 ```bash
 uv run python demo.py quality-eval \
-  --base-model Qwen/Qwen3-0.6B \
-  --compressed-model outputs/Qwen3-0.6B-W4A16 \
+  --base-model Qwen/Qwen3-8B \
+  --compressed-model outputs/Qwen3-8B-W4A16 \
   --mode all \
   --lm-eval-task hellaswag \
   --lm-eval-limit 50 \
   --max-perplexity-delta-pct 5 \
-  --max-task-regression 0.02 \
-  --output-json reports/qwen3-0.6b-w4a16-quality.json
+  --output-json reports/qwen3-8b-w4a16-quality.json
 ```
 
-Use `--dry-run` first on machines without the full GPU stack. The real eval path
-imports `torch`, `transformers`, `datasets`, and `lm_eval` only when execution is
-requested:
+Dry-run first on machines without the full GPU stack:
 
 ```bash
 uv run python demo.py quality-eval \
-  --base-model Qwen/Qwen3-0.6B \
-  --compressed-model outputs/Qwen3-0.6B-W4A16 \
+  --base-model Qwen/Qwen3-8B \
+  --compressed-model outputs/Qwen3-8B-W4A16 \
   --lm-eval-task hellaswag \
   --dry-run
 ```
 
-The implemented checks are:
+The JSON report contains a compact `summary.verdict` of `pass`, `fail`, or
+`needs_review`.
 
-- generation comparison: side-by-side deterministic responses for representative
-  prompts.
-- perplexity comparison: WikiText-style perplexity delta against the full
-  precision model.
-- task metrics: `lm_eval` task runs, such as `hellaswag`, for base and
-  compressed models.
-- long-context anchor probe: synthetic long-context retrieval check to catch
-  obvious cache/context regressions.
-
-By default `--mode all` includes the small `hellaswag` task with limit `50`,
-loads base and compressed models sequentially to reduce VRAM pressure, writes
-partial JSON after each completed phase when `--output-json` is set, and exits
-non-zero if a deployment gate fails. The JSON report contains a compact
-`summary.verdict` of `pass`, `fail`, or `needs_review`.
+Checks implemented:
+- Generation comparison: side-by-side deterministic responses.
+- Perplexity comparison: WikiText perplexity delta.
+- Task metrics: `lm_eval` task runs (e.g., `hellaswag`).
+- Long-context anchor probe: synthetic retrieval check.
 
 ## Benchmark planning workflow
 
-The benchmark planner generates commands for a real vLLM benchmark run. It does
-not claim benchmark numbers on your behalf. Run the generated commands on the
-same hardware, driver, CUDA, vLLM, model, prompt mix, and concurrency settings
-that you plan to deploy.
+The benchmark planner generates commands for a real vLLM benchmark run. Run the
+generated commands on the target serving hardware.
 
 ```bash
 uv run python demo.py benchmark-plan \
-  --model Qwen/Qwen2.5-32B-Instruct \
-  --algorithms gptq-w4a16,awq-w4a16,bnb-nf4,gguf-q4 \
+  --model Qwen/Qwen3-8B \
+  --algorithms gptq-w4a16,rtn-w8a16,fp8-dynamic \
   --dataset-name sharegpt \
   --num-prompts 200 \
   --input-len 1024 \
@@ -286,39 +309,90 @@ uv run python demo.py benchmark-plan \
 ```
 
 Each row includes:
+- `serve_command`: vLLM serving command for the quantized variant.
+- `bench_command`: matching `vllm bench serve` command.
+- `quality_eval_command`: quality-gate command to run before promoting.
 
-- `serve_command`: a vLLM serving command for the quantized variant.
-- `bench_command`: a matching `vllm bench serve` command.
-- `quality_eval_command`: the local quality-gate command to run before
-  promoting the checkpoint.
-- hardware and runtime notes for cases such as bitsandbytes, GGUF, AWQ kernels,
-  and FP8 flags.
+For a quick one-liner, run `make serve-bench-plan`.
 
-For a shell-oriented starting point, see `examples/vllm_quantization_benchmark.sh`.
+## Makefile recipes
+
+```bash
+make help             # List available recipes
+make venv             # uv sync --group dev
+make format           # Apply Ruff formatting
+make lint             # Run Ruff lint checks
+make test             # Run pytest suite
+make check            # format-check + lint + test + smoke-html
+make dev              # format + lint + test + smoke-check
+make clean            # Remove .venv and caches
+make smoke-html       # Validate HTML guide structure
+make dry-run-all      # Run article-support dry-run pipeline
+
+# GPU benchmarks
+make gpu-bench        # Quick smoke test (BF16, PyTorch SDPA)
+make gpu-bench-vllm   # Full FP8 benchmark (vLLM, Qwen3-8B, RTX 4090)
+
+# Compression
+make install-compression   # Install llm-compressor + dependencies
+make install-serving       # Install vLLM in .venv-vllm
+make install-gptqmodel     # Install GPTQModel isolated
+
+# Custom runs
+make run ARGS="<args>"                     # Run demo.py with arbitrary args
+make plan PARAMS_B=13 HARDWARE=hopper      # Memory planner with vars
+make recipe ALGORITHM=fp8-dynamic          # Print a recipe
+
+# Variables accepted by most recipes
+make plan PARAMS_B=13 HARDWARE=hopper CONTEXT=8192 CONCURRENCY=8
+make gpu-bench \
+  GPU_MODELS=Qwen/Qwen3-8B,Qwen/Qwen3-0.6B \
+  GPU_VARIANTS=bf16,fp8-dynamic \
+  GPU_KERNELS=vllm
+```
 
 ## Model architecture inputs
 
-The memory planner needs layer count, hidden size, and KV-head ratio. Beginners
-can start with built-in presets:
+The memory planner needs layer count, hidden size, and KV-head ratio. Start
+with built-in presets:
 
 ```bash
-uv run python demo.py plan --model-preset qwen3-0.6b --hardware ada --goal throughput
-uv run python demo.py plan --model-preset llama3-8b --hardware cpu
+uv run python demo.py plan --model-preset qwen3-8b --hardware ada --goal throughput
+uv run python demo.py plan --model-preset qwen3-0.6b --hardware cpu
 ```
 
-For a model that is not listed, pass a local Hugging Face `config.json`:
+For a model not listed, pass a local Hugging Face `config.json`:
 
 ```bash
 uv run python demo.py plan --params-b 13 --hf-config ./config.json --hardware hopper
 ```
 
-If neither `--model-preset` nor `--hf-config` is provided, the CLI prints a
-warning that it is using generic 7B-style architecture assumptions.
+## Practical algorithm defaults
+
+| Use case | Algorithm | Package |
+|----------|-----------|---------|
+| Fit model into GPU memory | `gptq-w4a16` | llm-compressor |
+| Throughput (Ada/Hopper) | `fp8-dynamic` | llm-compressor + vLLM |
+| Activation quantization | `rtn-w8a16` or SmoothQuant | llm-compressor |
+| Fast experiments, QLoRA | NF4 | bitsandbytes |
+| CPU / Apple Silicon / edge | GGUF | llama.cpp / Ollama |
+| GPTQ/AWQ across runtimes | GPTQ | GPTQModel |
+
+## Memory model
+
+```text
+total GPU ~= quantized weights + KV cache + runtime overhead + safety buffer
+```
+
+For serving, KV cache often dominates when context length or concurrency rises.
+For offline compression: `llm-compressor` can onload decoder layers one at a
+time, but GPTQ-like methods also allocate auxiliary hessian memory for the
+active layer, and CPU/disk must hold the source model.
+
+Always validate with a real benchmark on the target serving engine, model
+family, prompt lengths, batch/concurrency shape, and quality metric.
 
 ## Formatting
-
-`ruff` is configured as the formatter and included in the `dev` dependency
-group:
 
 ```bash
 uv sync --group dev
@@ -326,55 +400,17 @@ uv run ruff format .
 uv run ruff check .
 ```
 
-The heavyweight ML and serving packages are intentionally not declared as
-project extras. `uv` resolves optional dependencies while locking the project, so
-putting CUDA-only packages such as `vllm` in `[project.optional-dependencies]`
-can break a normal `uv sync --group dev` on local development machines.
-
-## Practical algorithm defaults
-
-Use `llm-compressor` when the output should be a production checkpoint for vLLM
-or another runtime that understands compressed-tensors metadata. Start with
-GPTQ W4A16 for fitting a model into memory, FP8 dynamic on Ada/Hopper for
-throughput, and SmoothQuant plus W8A8 when activation quantization matters.
-
-Use bitsandbytes for fast experiments and low-memory fine-tuning. Its NF4 path is
-especially common for QLoRA-style workflows, but it is not the cleanest way to
-publish a vLLM production artifact.
-
-Use GPTQModel when you want a current alternative for GPTQ/AWQ checkpoints across
-Transformers, Optimum, PEFT, vLLM, and SGLang. Avoid starting new projects on
-AutoAWQ or AutoGPTQ unless you are pinned to an older stack.
-
-Use GGUF and llama.cpp/Ollama/MLX-LM for CPU, Apple Silicon, desktop, and edge
-deployment.
-
-## Memory model
-
-The planner estimates:
-
-```text
-total GPU target ~= quantized weights + KV cache + runtime overhead + safety buffer
-```
-
-For serving, KV cache often dominates when context length or concurrency rises.
-For offline compression, the relevant number is different: `llm-compressor` can
-onload text decoder layers one at a time, but GPTQ-like methods also allocate
-auxiliary hessian memory for the active layer, and CPU or disk must hold the
-source model.
-
-The output is a first-pass sizing guide. Always validate with a real benchmark on
-the target serving engine, model family, prompt lengths, batch/concurrency shape,
-and quality metric.
+Heavyweight ML packages are intentionally not declared as project extras. `uv`
+resolves optional dependencies while locking the project, so putting CUDA-only
+packages such as `vllm` in `[project.optional-dependencies]` can break a normal
+`uv sync --group dev` on local development machines.
 
 ## Article support references
 
 This demo supports the compression and quantization article with:
-
 - executable LLM serving workflows for RTN W8A16, GPTQ W4A16, and dynamic FP8.
 - local-runtime guidance for GGUF CPU and Apple Silicon deployment.
-- explicit recipe stubs for AutoRound, NVFP4/MXFP4, and SVDQuant/Nunchaku
-  paths that are article-relevant but not executable in this beginner repo.
+- explicit recipe stubs for AutoRound, NVFP4/MXFP4, and SVDQuant/Nunchaku paths.
 - current upstream package docs and repositories linked from the HTML guide.
 
 The HTML guide is the reader-facing package, algorithm, and hardware selector.

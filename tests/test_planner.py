@@ -50,23 +50,21 @@ def test_kv_cache_scales_with_concurrency() -> None:
 
 
 def test_select_algorithm_prefers_edge_for_cpu() -> None:
-    assert select_algorithm(goal="fit-memory", hardware="cpu") == "gguf-q4"
+    assert select_algorithm(goal="fit-memory", hardware="cpu") == "rtn-w8a16"
 
 
-def test_cpu_plan_uses_local_runtime_recommendations() -> None:
+def test_cpu_plan_uses_cpu_recommendation_path() -> None:
     plan = build_plan(
         params_b=7,
-        algorithm_key="gguf-q4",
+        algorithm_key="rtn-w8a16",
         layers=32,
         hidden_size=4096,
         context_tokens=4096,
         concurrency=1,
     )
 
-    assert plan.recommendations == ()
-    assert plan.local_recommendations
-    assert plan.compression_memory.gpu_gib == 0
-    assert plan.serving_target_label == "RAM / unified memory target"
+    assert plan.recommendations
+    assert plan.serving_target_label == "GPU memory target"
 
 
 def test_select_algorithm_prefers_fp8_for_hopper_throughput() -> None:

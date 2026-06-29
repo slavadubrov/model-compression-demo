@@ -35,6 +35,8 @@ from .gpu_benchmarks import (
     DEFAULT_GPU_BENCHMARK_MODELS,
     DEFAULT_GPU_BENCHMARK_PROMPTS,
     DEFAULT_GPU_BENCHMARK_VARIANTS,
+    DEFAULT_VLLM_GPU_MEMORY_UTILIZATION,
+    DEFAULT_VLLM_MAX_MODEL_LEN,
     build_gpu_benchmark_plan,
     format_gpu_benchmark_plan,
     format_gpu_benchmark_summary,
@@ -229,7 +231,7 @@ def build_parser() -> argparse.ArgumentParser:
     quantize.add_argument(
         "--algorithm", choices=EXECUTABLE_QUANTIZATION_ALGORITHMS, default="gptq-w4a16"
     )
-    quantize.add_argument("--model", default="Qwen/Qwen3-0.6B")
+    quantize.add_argument("--model", default="Qwen/Qwen3-8B")
     quantize.add_argument("--output-dir")
     quantize.add_argument("--dataset", default="wikitext")
     quantize.add_argument("--dataset-config-name", default="wikitext-2-raw-v1")
@@ -255,10 +257,10 @@ def build_parser() -> argparse.ArgumentParser:
         "benchmark-plan",
         help="Generate reproducible vLLM benchmark commands for quantized variants.",
     )
-    benchmark.add_argument("--model", default="Qwen/Qwen2.5-32B-Instruct")
+    benchmark.add_argument("--model", default="Qwen/Qwen3-8B")
     benchmark.add_argument(
         "--algorithms",
-        default="gptq-w4a16,awq-w4a16,fp8-dynamic",
+        default="gptq-w4a16,rtn-w8a16,fp8-dynamic",
         help="Comma-separated algorithm keys from list-algorithms.",
     )
     benchmark.add_argument("--dataset-name", default="sharegpt")
@@ -281,12 +283,14 @@ def build_parser() -> argparse.ArgumentParser:
     gpu_benchmark.add_argument(
         "--variants",
         default=",".join(DEFAULT_GPU_BENCHMARK_VARIANTS),
-        help="Comma-separated variants: bf16, fp16, bnb-int8, bnb-nf4.",
+        help=(
+            "Comma-separated variants: bf16, fp16, bnb-int8, bnb-nf4, fp8-dynamic, fp8-dynamic-kv."
+        ),
     )
     gpu_benchmark.add_argument(
         "--kernels",
         default=",".join(DEFAULT_GPU_BENCHMARK_KERNELS),
-        help="Comma-separated kernels: eager, sdpa, sdpa-flash, sdpa-math, flash-attn-2.",
+        help="Comma-separated kernels: eager, sdpa, sdpa-flash, sdpa-math, flash-attn-2, vllm.",
     )
     gpu_benchmark.add_argument("--prompt", action="append", default=[])
     gpu_benchmark.add_argument("--max-new-tokens", type=int, default=64)
@@ -296,6 +300,17 @@ def build_parser() -> argparse.ArgumentParser:
     gpu_benchmark.add_argument("--report-html", default="reports/gpu-benchmark-report.html")
     gpu_benchmark.add_argument("--trust-remote-code", action="store_true")
     gpu_benchmark.add_argument("--fail-fast", action="store_true")
+    gpu_benchmark.add_argument("--vllm-max-model-len", type=int, default=DEFAULT_VLLM_MAX_MODEL_LEN)
+    gpu_benchmark.add_argument(
+        "--vllm-gpu-memory-utilization",
+        type=float,
+        default=DEFAULT_VLLM_GPU_MEMORY_UTILIZATION,
+    )
+    gpu_benchmark.add_argument(
+        "--vllm-enforce-eager",
+        dest="vllm_enforce_eager",
+        action="store_true",
+    )
     gpu_benchmark.add_argument("--dry-run", action="store_true")
 
     compare = subparsers.add_parser(
@@ -491,12 +506,12 @@ def _run_quantize(args: argparse.Namespace, _parser: argparse.ArgumentParser) ->
 
 def _run_serve_command(args: argparse.Namespace, _parser: argparse.ArgumentParser) -> int:
     model_path = args.model_path or default_output_dir(
-        model="Qwen/Qwen3-0.6B",
+        model="Qwen/Qwen3-8B",
         algorithm_key=args.algorithm,
     )
     max_model_len = args.max_model_len
     if max_model_len is None:
-        max_model_len = 32768 if args.algorithm in {"fp8-dynamic", "kv-cache-fp8"} else 4096
+        max_model_len = 32768 if args.algorithm == "fp8-dynamic" else 4096
     print(
         build_vllm_serve_command(
             algorithm_key=args.algorithm,
@@ -551,6 +566,8 @@ def _run_gpu_benchmark(args: argparse.Namespace, parser: argparse.ArgumentParser
             repeat_runs=args.repeat_runs,
             output_json=args.output_json,
             report_html=args.report_html,
+            vllm_max_model_len=args.vllm_max_model_len,
+            vllm_gpu_memory_utilization=args.vllm_gpu_memory_utilization,
         )
     except ValueError as exc:
         parser.error(str(exc))
@@ -572,6 +589,9 @@ def _run_gpu_benchmark(args: argparse.Namespace, parser: argparse.ArgumentParser
         report_html=args.report_html,
         trust_remote_code=args.trust_remote_code,
         fail_fast=args.fail_fast,
+        vllm_max_model_len=args.vllm_max_model_len,
+        vllm_gpu_memory_utilization=args.vllm_gpu_memory_utilization,
+        vllm_enforce_eager=args.vllm_enforce_eager,
     )
     print(format_gpu_benchmark_summary(payload))
     return 0

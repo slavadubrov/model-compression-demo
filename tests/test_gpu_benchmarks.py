@@ -6,6 +6,7 @@ import pytest
 
 from compression_demo.gpu_benchmarks import (
     GPUBenchmarkRun,
+    _parse_nvidia_smi_used_memory_gib,
     build_gpu_benchmark_plan,
     format_gpu_benchmark_plan,
     summarize_gpu_benchmark_results,
@@ -16,8 +17,8 @@ from compression_demo.gpu_benchmarks import (
 
 def test_gpu_benchmark_plan_formats_without_heavy_imports() -> None:
     plan = build_gpu_benchmark_plan(
-        models=("Qwen/Qwen3-0.6B",),
-        variants=("bf16", "bnb-nf4"),
+        models=("Qwen/Qwen3-8B",),
+        variants=("bf16", "fp8-dynamic"),
         kernels=("sdpa", "eager"),
         prompts=("hello",),
         max_new_tokens=8,
@@ -29,10 +30,34 @@ def test_gpu_benchmark_plan_formats_without_heavy_imports() -> None:
 
     formatted = format_gpu_benchmark_plan(plan)
 
-    assert plan["total_runs"] == 4
-    assert "Qwen/Qwen3-0.6B" in formatted
-    assert "bf16, bnb-nf4" in formatted
+    assert plan["total_runs"] == 2
+    assert "Qwen/Qwen3-8B" in formatted
+    assert "bf16, fp8-dynamic" in formatted
     assert "downloads models" in formatted
+
+
+def test_gpu_benchmark_plan_routes_fp8_to_vllm_only() -> None:
+    plan = build_gpu_benchmark_plan(
+        models=("Qwen/Qwen2.5-7B-Instruct",),
+        variants=("bf16", "fp8-dynamic", "fp8-dynamic-kv"),
+        kernels=("sdpa", "vllm"),
+        prompts=("hello",),
+        max_new_tokens=8,
+        warmup_runs=1,
+        repeat_runs=1,
+        output_json="reports/out.json",
+        report_html="reports/out.html",
+        vllm_max_model_len=2048,
+        vllm_gpu_memory_utilization=0.8,
+    )
+
+    formatted = format_gpu_benchmark_plan(plan)
+
+    assert plan["total_runs"] == 4
+    assert len(plan["skipped_runs"]) == 2
+    assert any(item["variant"] == "fp8-dynamic" for item in plan["skipped_runs"])
+    assert "vLLM max len:2048" in formatted
+    assert "Skipped:      2" in formatted
 
 
 def test_gpu_benchmark_summary_picks_fastest_and_compressed() -> None:
@@ -51,10 +76,10 @@ def test_gpu_benchmark_summary_picks_fastest_and_compressed() -> None:
         ),
         GPUBenchmarkRun(
             model="model-a",
-            variant="bnb-nf4",
-            variant_label="bitsandbytes NF4 4-bit",
-            kernel="sdpa",
-            kernel_label="PyTorch SDPA default",
+            variant="fp8-dynamic",
+            variant_label="FP8 dynamic",
+            kernel="vllm",
+            kernel_label="vLLM",
             status="ok",
             generated_tokens_per_second=12,
             peak_allocated_gib=2,
@@ -66,8 +91,9 @@ def test_gpu_benchmark_summary_picks_fastest_and_compressed() -> None:
     summary = summarize_gpu_benchmark_results(runs)
 
     assert summary["ok_runs"] == 2
-    assert summary["fastest"]["variant"] == "bnb-nf4"
-    assert summary["lowest_memory"]["variant"] == "bnb-nf4"
+    assert summary["fastest"]["variant"] == "fp8-dynamic"
+    assert summary["lowest_memory"]["variant"] == "fp8-dynamic"
+    assert summary["lowest_memory"]["memory_basis_gib"] == 0.6
     assert summary["best_compression"]["compression_ratio_vs_bf16"] == 3.3
 
 
@@ -83,19 +109,53 @@ def test_gpu_benchmark_report_writes_html(tmp_path) -> None:
             },
         },
         "config": {"output_json": "out.json", "report_html": "out.html"},
-        "summary": {},
+        "summary": {
+            "ok_runs": 2,
+            "skipped_runs": 0,
+            "failed_runs": 0,
+            "fastest": {
+                "model": "Qwen/Qwen3.5-9B",
+                "variant": "fp8-dynamic",
+                "kernel": "vllm",
+                "generated_tokens_per_second": 18.0,
+            },
+            "lowest_memory": {
+                "model": "Qwen/Qwen3.5-9B",
+                "variant": "fp8-dynamic",
+                "kernel": "vllm",
+                "peak_allocated_gib": 9.0,
+            },
+            "best_compression": {
+                "model": "Qwen/Qwen3.5-9B",
+                "variant": "fp8-dynamic",
+                "kernel": "vllm",
+                "compression_ratio_vs_bf16": 1.8,
+            },
+        },
         "runs": [
             {
-                "model": "Qwen/Qwen3-0.6B",
+                "model": "Qwen/Qwen3.5-9B",
                 "variant": "bf16",
-                "kernel": "sdpa",
+                "kernel": "vllm",
                 "status": "ok",
                 "generated_tokens_per_second": 10.0,
-                "peak_allocated_gib": 1.2,
-                "model_memory_gib": 1.1,
+                "peak_allocated_gib": None,
+                "peak_reserved_gib": 16.4,
+                "model_memory_gib": 16.0,
                 "compression_ratio_vs_bf16": 1.0,
                 "error": None,
-            }
+            },
+            {
+                "model": "Qwen/Qwen3.5-9B",
+                "variant": "fp8-dynamic",
+                "kernel": "vllm",
+                "status": "ok",
+                "generated_tokens_per_second": 18.0,
+                "peak_allocated_gib": 9.0,
+                "model_memory_gib": 8.9,
+                "compression_ratio_vs_bf16": 1.8,
+                "error": None,
+            },
         ],
     }
     report = tmp_path / "report.html"
@@ -104,8 +164,14 @@ def test_gpu_benchmark_report_writes_html(tmp_path) -> None:
 
     html = report.read_text(encoding="utf-8")
     assert "GPU Compression Benchmark Report" in html
+    assert "Conclusions" in html
+    assert "Best FP8 throughput comparison" in html
+    assert "nvidia-smi used-memory delta" in html
     assert "Generation Throughput" in html
-    assert "Qwen3-0.6B" in html
+    assert "Peak Allocated GPU Memory" in html
+    assert "Compression Ratio vs BF16 Memory Footprint" in html
+    assert "No successful measurements." not in html
+    assert "Qwen3.5-9B" in html
 
 
 def test_cli_gpu_benchmark_can_be_monkeypatched(tmp_path, monkeypatch) -> None:
@@ -122,6 +188,7 @@ def test_cli_gpu_benchmark_can_be_monkeypatched(tmp_path, monkeypatch) -> None:
             },
             "summary": {
                 "ok_runs": 1,
+                "skipped_runs": 0,
                 "failed_runs": 0,
                 "fastest": None,
                 "lowest_memory": None,
@@ -163,3 +230,9 @@ def test_cli_gpu_benchmark_can_be_monkeypatched(tmp_path, monkeypatch) -> None:
 def test_gpu_benchmark_numbers_must_be_positive() -> None:
     with pytest.raises(ValueError, match="repeat_runs must be a positive integer"):
         validate_gpu_benchmark_numbers(max_new_tokens=8, warmup_runs=1, repeat_runs=0)
+
+
+def test_nvidia_smi_memory_parser_reads_mib_values() -> None:
+    assert _parse_nvidia_smi_used_memory_gib("1024\n") == 1.0
+    assert _parse_nvidia_smi_used_memory_gib("2048 MiB\n") == 2.0
+    assert _parse_nvidia_smi_used_memory_gib("not available\n") is None

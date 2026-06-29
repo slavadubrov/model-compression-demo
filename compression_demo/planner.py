@@ -149,14 +149,6 @@ def estimate_compression_memory(
     algorithm = ALGORITHMS[algorithm_key]
     fp16_model_gib = params_b * 1_000_000_000 * 2 / BYTES_PER_GIB
 
-    if algorithm.scheme_key == "gguf-q4":
-        cpu_gib = fp16_model_gib * 1.20
-        notes = (
-            "GGUF conversion is a local runtime workflow. Plan for CPU RAM, disk, "
-            "and optional Apple unified memory; no CUDA compression GPU is required."
-        )
-        return CompressionMemoryEstimate(cpu_gib=cpu_gib, gpu_gib=0.0, notes=notes)
-
     cpu_gib = fp16_model_gib * 1.20
 
     layer_weight_gib = fp16_model_gib / layers
@@ -262,7 +254,6 @@ def select_algorithm(
     """Choose a pragmatic default algorithm for the requested goal and hardware."""
 
     hw = hardware.lower()
-    dep = deployment.lower()
     goal = goal.lower()
     cc = ARCH_TO_COMPUTE_CAPABILITY.get(hw)
     if cc is None:
@@ -270,19 +261,15 @@ def select_algorithm(
         raise ValueError(f"Unknown hardware '{hardware}'. Expected one of: {expected}")
 
     if hw in {"cpu", "apple"}:
-        return "gguf-q4"
-    if "fine" in goal or "qlora" in goal:
-        return "bnb-nf4"
-    if "transformers" in dep and "production" not in goal:
-        return "bnb-nf4"
-    if cc >= 10.0 and ("maximum" in goal or "lowest" in goal):
-        return "fp8-dynamic"
+        return "rtn-w8a16"
     if cc >= 8.9 and ("throughput" in goal or "latency" in goal):
         return "fp8-dynamic"
-    if "quality" in goal and cc >= 7.5:
-        return "smoothquant-w8a8"
     if "memory" in goal or "lowest" in goal or "fit" in goal:
         return "gptq-w4a16"
+    if "fine" in goal or "qlora" in goal:
+        return "rtn-w8a16"
+    if "quality" in goal:
+        return "fp8-dynamic"
     return "gptq-w4a16"
 
 
@@ -317,21 +304,13 @@ def build_plan(
         layers=layers,
         hidden_size=hidden_size,
     )
-    if algorithm.scheme_key == "gguf-q4":
-        recommendations = ()
-        local_recommendations = recommend_local_runtimes(required_gib=serving.total_gib)
-        serving_target_label = "RAM / unified memory target"
-        runtime_note = (
-            "Use llama.cpp, Ollama, or MLX-LM for local deployment instead of CUDA server GPUs."
-        )
-    else:
-        recommendations = recommend_instances(
-            required_gib=serving.total_gib,
-            min_compute_capability=scheme.min_compute_capability,
-        )
-        local_recommendations = ()
-        serving_target_label = "GPU memory target"
-        runtime_note = "Use a real serving load test on the target CUDA runtime before rollout."
+    recommendations = recommend_instances(
+        required_gib=serving.total_gib,
+        min_compute_capability=scheme.min_compute_capability,
+    )
+    local_recommendations = ()
+    serving_target_label = "GPU memory target"
+    runtime_note = "Use a real serving load test on the target CUDA runtime before rollout."
 
     notes = (
         "Validate quality with task metrics and perplexity before production rollout.",
