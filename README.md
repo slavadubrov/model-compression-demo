@@ -6,11 +6,6 @@ compression and quantization approaches. It focuses on text LLM serving:
 GGUF deployment, vLLM serving commands, and quality gates for deciding whether a
 compressed checkpoint is safe to promote.
 
-The runnable planner and tests use only the Python standard library. The actual
-quantization paths are optional because this machine does not currently have
-`torch`, `transformers`, `llmcompressor`, `vllm`, `bitsandbytes`, or `gptqmodel`
-installed.
-
 ## What is included
 
 - `demo.py`: CLI for algorithm listing, recipe generation, memory estimation,
@@ -298,6 +293,7 @@ The JSON report contains a compact `summary.verdict` of `pass`, `fail`, or
 `needs_review`.
 
 Checks implemented:
+
 - Generation comparison: side-by-side deterministic responses.
 - Perplexity comparison: WikiText perplexity delta.
 - Task metrics: `lm_eval` task runs (e.g., `hellaswag`).
@@ -320,6 +316,7 @@ uv run python demo.py benchmark-plan \
 ```
 
 Each row includes:
+
 - `serve_command`: vLLM serving command for the quantized variant.
 - `bench_command`: matching `vllm bench serve` command.
 - `quality_eval_command`: quality-gate command to run before promoting.
@@ -422,6 +419,7 @@ packages such as `vllm` in `[project.optional-dependencies]` can break a normal
 ## Article support references
 
 This demo supports the compression and quantization article with:
+
 - executable LLM serving workflows for RTN W8A16, GPTQ W4A16, and dynamic FP8.
 - local-runtime guidance for GGUF CPU and Apple Silicon deployment.
 - explicit recipe stubs for AutoRound, NVFP4/MXFP4, and SVDQuant/Nunchaku paths.
