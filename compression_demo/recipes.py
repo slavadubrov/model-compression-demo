@@ -173,8 +173,8 @@ def recipe_snippet(algorithm_key: str) -> str:
             )
 
             oneshot(model=model, recipe=recipe)
-            model.save_pretrained("outputs/Qwen3-0.6B-FP8-Dynamic", save_compressed=True)
-            tokenizer.save_pretrained("outputs/Qwen3-0.6B-FP8-Dynamic")
+            model.save_pretrained("outputs/Qwen3-8B-FP8-Dynamic", save_compressed=True)
+            tokenizer.save_pretrained("outputs/Qwen3-8B-FP8-Dynamic")
         """,
     }
     return dedent(snippets[algorithm_key]).strip() + "\n"
@@ -242,11 +242,14 @@ def build_vllm_serve_command(
     enable_prefix_caching: bool = False,
     fp8_kv_cache: bool = False,
 ) -> str:
-    """Return a vLLM serving command matched to the selected algorithm."""
+    """Return a vLLM serving command for a checkpoint written by ``quantize``.
+
+    Every executable recipe writes a ``compressed-tensors`` checkpoint. vLLM reads
+    the format from the checkpoint config and rejects a ``--quantization`` value
+    that does not match it, so the command passes no ``--quantization`` flag.
+    """
 
     command = ["vllm", "serve", model_path, "--max-model-len", str(max_model_len)]
-    if algorithm_key == "fp8-dynamic":
-        command.extend(["--quantization", "fp8"])
     if fp8_kv_cache:
         command.extend(["--kv-cache-dtype", "fp8"])
     if enable_prefix_caching:

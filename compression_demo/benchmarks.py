@@ -17,10 +17,6 @@ BENCHMARK_WARNING = (
     "driver, CUDA, vLLM, model, prompt mix, and concurrency settings."
 )
 
-_VLLM_QUANTIZATION_FLAGS = {
-    "gptq-w4a16": ("--quantization", "gptq"),
-}
-
 
 @dataclass(frozen=True)
 class BenchmarkPlanRow:
@@ -76,42 +72,16 @@ def _quote_command(parts: list[str]) -> str:
     return " ".join(shlex.quote(part) for part in parts)
 
 
-def _serve_command(
-    *,
-    model: str,
-    algorithm_key: str,
-    model_path: str,
-    max_model_len: int,
-    port: int,
-) -> str:
-    if algorithm_key == "fp8-dynamic":
-        return build_vllm_serve_command(
-            algorithm_key=algorithm_key,
-            model_path=model_path,
-            max_model_len=max_model_len,
-            port=port,
-        )
-
-    parts = [
-        "vllm",
-        "serve",
-        model_path,
-        "--max-model-len",
-        str(max_model_len),
-    ]
-    parts.extend(_VLLM_QUANTIZATION_FLAGS.get(algorithm_key, ()))
-    if port != 8000:
-        parts.extend(["--port", str(port)])
-    return _quote_command(parts)
-
-
 def _bench_command(
     *,
+    model: str,
     model_path: str,
     dataset_name: str,
     num_prompts: int,
     input_len: int,
     output_len: int,
+    max_concurrency: int,
+    seed: int,
     port: int,
 ) -> str:
     parts = [
@@ -120,15 +90,25 @@ def _bench_command(
         "serve",
         "--model",
         model_path,
+        "--tokenizer",
+        model,
         "--dataset-name",
         dataset_name,
         "--num-prompts",
         str(num_prompts),
-        "--input-len",
-        str(input_len),
-        "--output-len",
-        str(output_len),
     ]
+    if dataset_name == "random":
+        parts.extend(
+            [
+                "--random-input-len",
+                str(input_len),
+                "--random-output-len",
+                str(output_len),
+                "--random-range-ratio",
+                "0",
+            ]
+        )
+    parts.extend(["--max-concurrency", str(max_concurrency), "--seed", str(seed)])
     if port != 8000:
         parts.extend(["--port", str(port)])
     return _quote_command(parts)
@@ -164,9 +144,12 @@ def _hardware_notes(algorithm_key: str) -> str:
 
 def _runtime_notes(algorithm_key: str) -> str:
     if algorithm_key == "gptq-w4a16":
-        return "GPTQ is a checkpoint method; compare the active vLLM kernel path before promotion."
+        return (
+            "vLLM reads the compressed-tensors format from the checkpoint; "
+            "check which kernel it selects before promotion."
+        )
     if algorithm_key == "fp8-dynamic":
-        return "Confirm FP8 flag names against the installed vLLM version."
+        return "vLLM reads the FP8 compressed-tensors format from the checkpoint."
     return "Validate runtime support before treating this as a production path."
 
 
@@ -179,6 +162,8 @@ def build_benchmark_plan(
     input_len: int,
     output_len: int,
     max_model_len: int,
+    max_concurrency: int = 10,
+    seed: int = 42,
     port: int = 8000,
 ) -> BenchmarkPlan:
     """Build a dependency-light command plan for vLLM serving benchmarks."""
@@ -192,19 +177,21 @@ def build_benchmark_plan(
                 algorithm_key=algorithm_key,
                 algorithm_name=algorithm.name,
                 model_path=model_path,
-                serve_command=_serve_command(
-                    model=model,
+                serve_command=build_vllm_serve_command(
                     algorithm_key=algorithm_key,
                     model_path=model_path,
                     max_model_len=max_model_len,
                     port=port,
                 ),
                 bench_command=_bench_command(
+                    model=model,
                     model_path=model_path,
                     dataset_name=dataset_name,
                     num_prompts=num_prompts,
                     input_len=input_len,
                     output_len=output_len,
+                    max_concurrency=max_concurrency,
+                    seed=seed,
                     port=port,
                 ),
                 quality_eval_command=_quality_eval_command(model=model, model_path=model_path),

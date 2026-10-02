@@ -2,8 +2,9 @@
 
 ![Compression Demo](docs/compression-demo.png)
 
-This directory is a standalone support project for a blog article about model
-compression and quantization approaches. It focuses on text LLM serving:
+This repository accompanies the article
+[Model Quantization Guide: Foundations to Production Serving](https://slavadubrov.github.io/blog/2026/07/05/model-quantization-in-2026-from-foundations-to-production-serving/).
+It focuses on text LLM serving:
 `llm-compressor` GPTQ W4A16 and FP8 paths, current industry alternatives, local
 GGUF deployment, vLLM serving commands, and quality gates for deciding whether a
 compressed checkpoint is safe to promote.
@@ -60,17 +61,6 @@ uv run python demo.py benchmark-plan \
 
 # Run tests
 uv run pytest
-```
-
-From the repository root:
-
-```bash
-uv run --project compression/model-compression-demo python demo.py plan \
-  --params-b 7 \
-  --goal fit-memory \
-  --hardware ampere \
-  --context 4096 \
-  --concurrency 4
 ```
 
 Open `index.html` in a browser for the guide and calculator.
@@ -261,7 +251,7 @@ uv run python demo.py serve-command \
 The output is a ready-to-run shell command:
 
 ```bash
-vllm serve outputs/Qwen3-8B-W4A16 --max-model-len 4096
+vllm serve outputs/Qwen3-8B-W4A16 --max-model-len 4096 --enable-prefix-caching
 ```
 
 ### Quality evaluation
@@ -310,7 +300,7 @@ generated commands on the target serving hardware.
 uv run python demo.py benchmark-plan \
   --model Qwen/Qwen3-8B \
   --algorithms gptq-w4a16,rtn-w8a16,fp8-dynamic \
-  --dataset-name sharegpt \
+  --dataset-name random \
   --num-prompts 200 \
   --input-len 1024 \
   --output-len 256 \
@@ -320,7 +310,8 @@ uv run python demo.py benchmark-plan \
 Each row includes:
 
 - `serve_command`: vLLM serving command for the quantized variant.
-- `bench_command`: matching `vllm bench serve` command.
+- `bench_command`: matching `vllm bench serve` command with the base-model
+  tokenizer, fixed `--random-*` lengths, `--max-concurrency 10`, and `--seed 42`.
 - `quality_eval_command`: quality-gate command to run before promoting.
 
 For a quick one-liner, run `make serve-bench-plan`.
@@ -386,7 +377,7 @@ uv run python demo.py plan --params-b 13 --hf-config ./config.json --hardware ho
 |----------|-----------|---------|
 | Fit model into GPU memory | `gptq-w4a16` | llm-compressor |
 | Throughput (Ada/Hopper) | `fp8-dynamic` | llm-compressor + vLLM |
-| Activation quantization | `rtn-w8a16` or SmoothQuant | llm-compressor |
+| Activation quantization (INT8) | SmoothQuant W8A8 | llm-compressor |
 | Fast experiments, QLoRA | NF4 | bitsandbytes |
 | CPU / Apple Silicon / edge | GGUF | llama.cpp / Ollama |
 | GPTQ/AWQ across runtimes | GPTQ | GPTQModel |
@@ -424,7 +415,7 @@ This demo supports the compression and quantization article with:
 
 - executable LLM serving workflows for RTN W8A16, GPTQ W4A16, and dynamic FP8.
 - local-runtime guidance for GGUF CPU and Apple Silicon deployment.
-- explicit recipe stubs for AutoRound, NVFP4/MXFP4, and SVDQuant/Nunchaku paths.
+- `index.html` links AutoRound, NVFP4/MXFP4, and SVDQuant/Nunchaku as paths the CLI does not run.
 - current upstream package docs and repositories linked from the HTML guide.
 
 The HTML guide is the reader-facing package, algorithm, and hardware selector.
