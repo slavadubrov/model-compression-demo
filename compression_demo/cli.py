@@ -263,11 +263,13 @@ def build_parser() -> argparse.ArgumentParser:
         default="gptq-w4a16,rtn-w8a16,fp8-dynamic",
         help="Comma-separated algorithm keys from list-algorithms.",
     )
-    benchmark.add_argument("--dataset-name", default="sharegpt")
+    benchmark.add_argument("--dataset-name", default="random")
     benchmark.add_argument("--num-prompts", type=int, default=200)
     benchmark.add_argument("--input-len", type=int, default=1024)
     benchmark.add_argument("--output-len", type=int, default=256)
     benchmark.add_argument("--max-model-len", type=int, default=4096)
+    benchmark.add_argument("--max-concurrency", type=int, default=10)
+    benchmark.add_argument("--seed", type=int, default=42)
     benchmark.add_argument("--port", type=int, default=8000)
     benchmark.add_argument("--output-json")
 
@@ -523,7 +525,6 @@ def _run_serve_command(args: argparse.Namespace, _parser: argparse.ArgumentParse
             enable_prefix_caching=args.enable_prefix_caching,
         )
     )
-    print("# Check your installed vLLM version because FP8 flag names can vary.")
     return 0
 
 
@@ -542,6 +543,8 @@ def _run_benchmark_plan(args: argparse.Namespace, parser: argparse.ArgumentParse
         input_len=args.input_len,
         output_len=args.output_len,
         max_model_len=args.max_model_len,
+        max_concurrency=args.max_concurrency,
+        seed=args.seed,
         port=args.port,
     )
     if args.output_json:

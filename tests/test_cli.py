@@ -104,6 +104,13 @@ def test_plan_for_cpu_reports_local_runtime_not_gpu() -> None:
     assert "GPU memory target" in out
 
 
+def test_fp8_dynamic_recipe_saves_under_its_model_name() -> None:
+    out = run_cli("recipe", "--algorithm", "fp8-dynamic")
+    assert 'model_id = "Qwen/Qwen3-8B"' in out
+    assert "outputs/Qwen3-8B-FP8-Dynamic" in out
+    assert "Qwen3-0.6B" not in out
+
+
 def test_serve_command_for_fp8_kv_cache() -> None:
     out = run_cli(
         "serve-command",
@@ -112,7 +119,7 @@ def test_serve_command_for_fp8_kv_cache() -> None:
         "--fp8-kv-cache",
         "--enable-prefix-caching",
     )
-    assert "--quantization fp8" in out
+    assert "--quantization" not in out
     assert "--kv-cache-dtype fp8" in out
     assert "--max-model-len 32768" in out
     assert "--enable-prefix-caching" in out
@@ -127,7 +134,7 @@ def test_benchmark_plan_outputs_json_shape_and_commands(tmp_path: pathlib.Path) 
         "--algorithms",
         "gptq-w4a16,rtn-w8a16,fp8-dynamic",
         "--dataset-name",
-        "sharegpt",
+        "random",
         "--num-prompts",
         "200",
         "--input-len",
@@ -155,8 +162,15 @@ def test_benchmark_plan_generates_vllm_flags_for_executable_algorithms() -> None
         "--algorithms",
         "gptq-w4a16,rtn-w8a16,fp8-dynamic",
     )
-    assert "--quantization gptq" in out
-    assert "--quantization fp8" in out
+    # Every recipe writes a compressed-tensors checkpoint; vLLM rejects a
+    # --quantization value that does not match the checkpoint config.
+    assert "--quantization" not in out
+    assert "--random-input-len 1024" in out
+    assert "--random-output-len 256" in out
+    assert "--random-range-ratio 0" in out
+    assert "--tokenizer Qwen/Qwen3-8B" in out
+    assert "--max-concurrency 10" in out
+    assert "--seed 42" in out
     assert "Round-to-nearest W8A16" in out
     assert "GPU benchmark numbers are environment-specific" in out
 

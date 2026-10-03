@@ -136,7 +136,7 @@ CUDA harness:
 uv run python demo.py benchmark-plan \
   --model Qwen/Qwen3-8B \
   --algorithms gptq-w4a16,rtn-w8a16,fp8-dynamic \
-  --dataset-name sharegpt \
+  --dataset-name random \
   --num-prompts 200 \
   --input-len 1024 \
   --output-len 256 \
